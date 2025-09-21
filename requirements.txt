@@ -1,0 +1,21 @@
+# Core scientific stack
+numpy==1.26.4
+scipy==1.14.1
+pandas==2.2.2
+pyarrow==17.0.0
+
+# Plotting & visualization
+matplotlib==3.9.2
+plotly==5.24.1
+
+# Cloud & storage
+google-cloud-storage==2.17.0
+
+# Web app
+streamlit==1.38.0
+
+# Data formats
+fastparquet==2024.5.0
+
+# Testing
+pytest==8.3.2
