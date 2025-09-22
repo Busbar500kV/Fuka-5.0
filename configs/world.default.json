@@ -1,0 +1,26 @@
+{
+  "space": {
+    "dims": [64, 64, 32],
+    "dx": 1.0
+  },
+  "rho": {
+    "init": "gaussian_shell",
+    "theta_outer": 0.35,
+    "theta_core": 0.62,
+    "sigma": 10.0,
+    "center": [32, 32, 16]
+  },
+  "material": {
+    "eps_min": 1.0,
+    "eps_gain": 3.0,
+    "g_min": 1e-6,
+    "g_gain": 5e-6,
+    "nonlin": "softplus"
+  },
+  "morphogenesis": {
+    "D": 0.1,
+    "eta": 0.003,
+    "gamma_mass": 0.0002,
+    "lambda": 0.001
+  }
+}
