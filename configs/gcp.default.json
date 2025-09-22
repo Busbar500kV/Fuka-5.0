@@ -1,0 +1,5 @@
+{
+  "project_id": "${F5_GCP_PROJECT_ID}",
+  "bucket": "${F5_GCS_BUCKET}",
+  "runs_prefix": "${F5_RUNS_PREFIX}"
+}
