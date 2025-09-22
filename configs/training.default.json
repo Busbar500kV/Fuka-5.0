@@ -1,0 +1,55 @@
+{
+  "time": {
+    "window_sec": 0.05,
+    "fs": 200000,
+    "epochs": 300,
+    "on_blocks": [[0, 120], [200, 300]]
+  },
+  "bands": {
+    "low": [5000],
+    "high": [11000, 13000]
+  },
+  "decoders": {
+    "eta_w": 0.02
+  },
+  "caps": {
+    "Cmin": 6e-12,
+    "Cmax": 2.2e-10,
+    "etaC": 2e24,
+    "lambdaC": 0.05
+  },
+  "gates": {
+    "eta_g": 0.8,
+    "lambda_g": 0.03,
+    "mu_I": 0.8,
+    "mu_C": 0.5
+  },
+  "battery": {
+    "eta_h": 1.0,
+    "k_leak": 0.03,
+    "k_struct": 2e-10,
+    "B0": 1.0,
+    "B1": 0.3,
+    "rho_upkeep": 0.08,
+    "alpha_reh": 0.001
+  },
+  "maturity": {
+    "alpha_A": 0.06,
+    "beta_A": 0.02,
+    "B_thr": 0.4,
+    "mu_A": 0.6,
+    "nu_A": 0.6
+  },
+  "thermal": {
+    "Theta": 1.0,
+    "Lambda": 0.15,
+    "T_safe": 1.5,
+    "gamma_T": 0.6,
+    "E_b": 1.0
+  },
+  "rewards": {
+    "alpha": 1.0,
+    "beta": 2.0,
+    "gamma_cap_cost": 5e9
+  }
+}
