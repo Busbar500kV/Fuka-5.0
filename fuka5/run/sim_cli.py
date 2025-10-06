@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fuka5.io.compat_shim import init_backend_shims
 init_backend_shims()
 
@@ -18,7 +20,6 @@ Responsibilities
 - Write manifest at run start (immutable)
 """
 
-from __future__ import annotations
 import argparse
 import os
 import time

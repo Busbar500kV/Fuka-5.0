@@ -35,7 +35,6 @@ Browse GCS runs, pick an epoch, and visualize:
 
 Assumptions:
 - GCS credentials via ADC on the VM (or locally).
-- Artifacts written by sim_cli.py under: gs://<bucket>/<runs_prefix>/<RUN_ID>/
 """
 
 import os
@@ -104,7 +103,7 @@ except Exception:
 
 @st.cache_data(show_spinner=False)
 def _load_gcp(gcp_path: str) -> Dict[str, Any]:
-    return load_gcp_config(gcp_path)
+    return load_config(gcp_path)
 
 @st.cache_data(show_spinner=True, ttl=60)
 def _list_runs_cached(gcp_cfg: Dict[str, Any]) -> List[str]:
@@ -112,7 +111,7 @@ def _list_runs_cached(gcp_cfg: Dict[str, Any]) -> List[str]:
 
 @st.cache_data(show_spinner=False)
 def _list_run_blobs(gcp_cfg: Dict[str, Any], run_id: str) -> Dict[str, List[str]]:
-    base = gcs_path(gcp_cfg, run_id)
+    base = storage_path(gcp_cfg, run_id)
     blobs = list_blobs(gcp_cfg, base)
     vols = [b for b in blobs if b.startswith(f"{gcp_cfg['runs_prefix'].strip('/')}/{run_id}/volumes/")]
     shards = [b for b in blobs if b.startswith(f"{gcp_cfg['runs_prefix'].strip('/')}/{run_id}/shards/")]
@@ -183,7 +182,7 @@ epoch = st.sidebar.slider("Epoch", min_value=int(min(epochs)), max_value=int(max
 vol_gs = None
 for b in vol_blobs:
     if f"ep{epoch:03d}.npz" in b:
-        vol_gs = f"gs://{gcp_cfg['bucket'][5:]}/{b}"
+        rel_path = b  # relative path under runs/<RUN_ID>/...
         break
 
 if vol_gs is None:
@@ -199,12 +198,12 @@ metric_shards = [b for b in blobs["shards"] if "metrics_" in b]
 
 edges_df = pd.DataFrame()
 for sh in sorted(edge_shards):
-    df = _load_parquet(gcp_cfg, f"gs://{gcp_cfg['bucket'][5:]}/{sh}")
+    df = read_parquet(gcp_cfg, sh)
     edges_df = pd.concat([edges_df, df], ignore_index=True)
 
 metrics_df = pd.DataFrame()
 for sh in sorted(metric_shards):
-    dfm = _load_parquet(gcp_cfg, f"gs://{gcp_cfg['bucket'][5:]}/{sh}")
+    dfm = read_parquet(gcp_cfg, sh)
     metrics_df = pd.concat([metrics_df, dfm], ignore_index=True)
 
 # Filter by epoch
