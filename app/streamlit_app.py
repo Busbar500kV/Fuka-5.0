@@ -1,3 +1,30 @@
+from __future__ import annotations
+
+# ensure repo root is on sys.path when running from app/ subdir
+from pathlib import Path
+import sys, os
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# enable gs:// -> local runtime compatibility when F5_STORAGE=local
+from fuka5.io.compat_shim import init_backend_shims
+init_backend_shims()
+
+from fuka5.io.storage_facade import (
+    load_config,
+    list_runs,
+    list_blobs,
+    storage_path,
+    read_parquet,
+    read_npz,
+    read_json,
+    download_to_tmp,
+)
+
+CFG_PATH = "configs/local.default.json" if os.getenv("F5_STORAGE","gcs").lower()=="local" else "configs/gcp.default.json"
+gcp_path = CFG_PATH
+
 """
 Streamlit UI for Fuka 5.0
 -------------------------
@@ -11,7 +38,6 @@ Assumptions:
 - Artifacts written by sim_cli.py under: gs://<bucket>/<runs_prefix>/<RUN_ID>/
 """
 
-from __future__ import annotations
 import os
 import tempfile
 import json
@@ -22,7 +48,6 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-from fuka5.io.gcs import load_gcp_config, list_runs, list_blobs, download_blob_to_file, gcs_path
 from fuka5 import env_get
 
 # Components (shipped separately)
@@ -122,7 +147,6 @@ st.title("Fuka 5.0 — Space–Time Capacitor Substrate")
 
 # GCP config
 default_gcp_path = os.environ.get("F5_GCP_CONFIG", "configs/gcp.default.json")
-gcp_path = st.sidebar.text_input("GCP config path", value=default_gcp_path)
 gcp_cfg = _load_gcp(gcp_path)
 
 st.sidebar.markdown(f"**Project:** `{gcp_cfg.get('project_id','')}`")

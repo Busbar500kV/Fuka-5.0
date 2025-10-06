@@ -1,3 +1,6 @@
+from fuka5.io.compat_shim import init_backend_shims
+init_backend_shims()
+
 """
 fuka5.run.sim_cli
 -----------------

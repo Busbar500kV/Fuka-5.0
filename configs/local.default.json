@@ -1,0 +1,4 @@
+{
+  "runs_dir": "${F5_LOCAL_RUNS_DIR}",
+  "runs_prefix": "${F5_RUNS_PREFIX}"
+}
