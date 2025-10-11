@@ -1,0 +1,7 @@
+# Local environment and build files
+.venv/
+__pycache__/
+*.log
+*.parquet
+*.npz
+/srv/fuka/
