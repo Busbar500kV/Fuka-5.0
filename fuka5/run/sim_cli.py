@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fuka5.io.storage_facade import load_config, storage_path
 
 from fuka5.io.compat_shim import init_backend_shims
 init_backend_shims()
@@ -133,7 +134,7 @@ def main():
     world_cfg_dict = load_json_with_env(args.world)
     sources_cfg_dict = load_json_with_env(args.sources)
     training_cfg_dict = load_json_with_env(args.training)
-    gcp_cfg = load_gcp_config(args.gcp)
+    gcp_cfg = load_config(args.gcp)
 
     # Seeds
     seeds = seeds_from_int(args.seed)
@@ -284,7 +285,7 @@ def main():
     write_checkpoint(gcp_cfg, run_id, base_local, "done", {"epoch": time_cfg.epochs - 1})
 
     print(f"[Fuka5] Run complete: {run_id}")
-    print("GCS run folder:", gcs_path(gcp_cfg, run_id))
+    print("Run folder:", storage_path(gcp_cfg, run_id))
 
 
 if __name__ == "__main__":

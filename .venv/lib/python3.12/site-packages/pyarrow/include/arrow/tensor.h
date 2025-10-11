@@ -33,7 +33,7 @@
 
 namespace arrow {
 
-constexpr bool is_tensor_supported(Type::type type_id) {
+static inline bool is_tensor_supported(Type::type type_id) {
   switch (type_id) {
     case Type::UINT8:
     case Type::INT8:

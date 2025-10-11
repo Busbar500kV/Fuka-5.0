@@ -4,11 +4,13 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 ok = True
 issues = []
+SELF_ALLOW = {'scripts/verify_busbar.py'}
 ALLOW = {'fuka5/io/compat_shim.py','fuka5/io/gcs.py'}
 
 # 1) grep for live GCS references in code (ignore comments & docs)
 pat = re.compile(r'gs://|from\s+google\.cloud|import\s+google\.cloud')
 for f in subprocess.check_output(["git","ls-files","*.py"], text=True).splitlines():
+    if f in SELF_ALLOW: continue
     if f in ALLOW:
         continue
     p = root / f
@@ -26,6 +28,7 @@ for f in subprocess.check_output(["git","ls-files","*.py"], text=True).splitline
 # 2) compile all python files (syntax check)
 bad = []
 for f in subprocess.check_output(["git","ls-files","*.py"], text=True).splitlines():
+    if f in SELF_ALLOW: continue
     if f in ALLOW:
         continue
     p = root / f

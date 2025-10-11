@@ -1,3 +1,5 @@
+
+from fuka5.io.storage_facade import storage_path
 """
 fuka5.io.writers
 ----------------
@@ -61,7 +63,7 @@ class ShardWriter:
             local_path = os.path.join(self.local_dir, shard_name)
             df.to_parquet(local_path, index=False)
             # upload
-            dest = gcs_path(self.gcp_cfg, self.run_id, "shards", shard_name)
+            dest = storage_path(self.gcp_cfg, self.run_id, "shards", shard_name)
             upload_file(self.gcp_cfg, local_path, dest, content_type="application/octet-stream")
             # reset buffer
             self._rows.clear()
@@ -77,7 +79,7 @@ def save_volume_npz(gcp_cfg: Dict[str, Any], run_id: str, local_dir: str, epoch:
     fname = f"ep{epoch:03d}.npz"
     local_path = os.path.join(vol_dir, fname)
     np.savez_compressed(local_path, **arrays)
-    dest = gcs_path(gcp_cfg, run_id, "volumes", fname)
+    dest = storage_path(gcp_cfg, run_id, "volumes", fname)
     upload_file(gcp_cfg, local_path, dest, content_type="application/octet-stream")
 
 
@@ -85,7 +87,7 @@ def write_manifest(gcp_cfg: Dict[str, Any], run_id: str, manifest: Dict[str, Any
     """
     Write manifest.json under the run folder.
     """
-    dest = gcs_path(gcp_cfg, run_id, "manifest.json")
+    dest = storage_path(gcp_cfg, run_id, "manifest.json")
     upload_json(gcp_cfg, manifest, dest)
 
 
@@ -99,5 +101,5 @@ def write_checkpoint(gcp_cfg: Dict[str, Any], run_id: str, local_dir: str, name:
     local_path = os.path.join(ck_dir, fname)
     with open(local_path, "w", encoding="utf-8") as f:
         json.dump(payload, f)
-    dest = gcs_path(gcp_cfg, run_id, "checkpoints", fname)
+    dest = storage_path(gcp_cfg, run_id, "checkpoints", fname)
     upload_file(gcp_cfg, local_path, dest, content_type="application/json")

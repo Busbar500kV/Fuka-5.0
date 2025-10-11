@@ -1,0 +1,9 @@
+usage: sim_cli.py [-h] [--run_id RUN_ID] --world WORLD --sources SOURCES
+                  --training TRAINING --gcp GCP [--seed SEED]
+                  [--local_dir LOCAL_DIR]
+                  [--volume_downsample VOLUME_DOWNSAMPLE]
+                  [--edges_flush_every EDGES_FLUSH_EVERY]
+                  [--metrics_flush_every METRICS_FLUSH_EVERY]
+                  [--volume_every VOLUME_EVERY]
+                  [--checkpoint_every CHECKPOINT_EVERY]
+sim_cli.py: error: the following arguments are required: --world, --sources, --training, --gcp

@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/busbar/Fuka-5.0/fuka5/run/sim_cli.py", line 291, in <module>
+    main()
+  File "/home/busbar/Fuka-5.0/fuka5/run/sim_cli.py", line 215, in main
+    write_manifest(gcp_cfg, run_id, manifest)
+  File "/home/busbar/Fuka-5.0/fuka5/io/writers.py", line 88, in write_manifest
+    dest = gcs_path(gcp_cfg, run_id, "manifest.json")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/busbar/Fuka-5.0/fuka5/io/gcs.py", line 62, in gcs_path
+    bucket_name, prefix = bucket_and_prefix(gcp_cfg)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/busbar/Fuka-5.0/fuka5/io/gcs.py", line 48, in bucket_and_prefix
+    bucket_uri = gcp_cfg["bucket"]
+                 ~~~~~~~^^^^^^^^^^
+KeyError: 'bucket'
