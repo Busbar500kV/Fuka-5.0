@@ -1,5 +1,24 @@
+from __future__ import annotations
+
 
 from fuka5.io.storage_facade import storage_path
+
+from pathlib import Path as _Path
+import json as _json
+
+def _is_gs(p):
+    return isinstance(p, str) and p.startswith("gs://")
+
+def _ensure_parent_local(p):
+    _Path(p).parent.mkdir(parents=True, exist_ok=True)
+
+def _write_bytes_local(p, data: bytes):
+    _ensure_parent_local(p)
+    _Path(p).write_bytes(data)
+
+def _write_json_local(p, obj):
+    _ensure_parent_local(p)
+    _Path(p).write_text(_json.dumps(obj, indent=2))
 """
 fuka5.io.writers
 ----------------
@@ -15,7 +34,6 @@ Design:
 Dependencies: pandas, pyarrow.
 """
 
-from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import os
 import json
@@ -88,7 +106,7 @@ def write_manifest(gcp_cfg: Dict[str, Any], run_id: str, manifest: Dict[str, Any
     Write manifest.json under the run folder.
     """
     dest = storage_path(gcp_cfg, run_id, "manifest.json")
-    upload_json(gcp_cfg, manifest, dest)
+    put_json(gcp_cfg, manifest, dest)
 
 
 def write_checkpoint(gcp_cfg: Dict[str, Any], run_id: str, local_dir: str, name: str, payload: Dict[str, Any]) -> None:
@@ -103,3 +121,18 @@ def write_checkpoint(gcp_cfg: Dict[str, Any], run_id: str, local_dir: str, name:
         json.dump(payload, f)
     dest = storage_path(gcp_cfg, run_id, "checkpoints", fname)
     upload_file(gcp_cfg, local_path, dest, content_type="application/json")
+
+
+def put_bytes(cfg, dest_path, payload: bytes, content_type: str | None = None):
+    if _is_gs(dest_path):
+        from fuka5.io.gcs import upload_bytes as _gcs_upload_bytes
+        return _gcs_upload_bytes(cfg, payload, dest_path, content_type=content_type)
+    else:
+        _write_bytes_local(dest_path, payload)
+
+def put_json(cfg, obj, dest_path):
+    if _is_gs(dest_path):
+        from fuka5.io.gcs import upload_json as _gcs_upload_json
+        return _gcs_upload_json(cfg, obj, dest_path)
+    else:
+        _write_json_local(dest_path, obj)

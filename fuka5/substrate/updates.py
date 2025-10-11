@@ -1,3 +1,36 @@
+from __future__ import annotations
+def _normalize_freq_dict(d):
+    nd = {}
+    for k, v in d.items():
+        try:
+            kf = float(k)
+        except Exception:
+            try:
+                kf = float(str(k))
+            except Exception:
+                continue
+        nd[kf] = v
+    return nd
+def _get_lock_val(d, k):
+    # tolerate 11000 / 11000.0 / "11000"
+    candidates = []
+    candidates.append(k)
+    try: candidates.append(float(k))
+    except: pass
+    try: candidates.append(int(float(k)))
+    except: pass
+    try:
+        iv = int(float(k))
+        candidates.append(str(iv))
+    except: pass
+    try: candidates.append(str(k))
+    except: pass
+    seen = set()
+    for key in candidates:
+        if key in d and key not in seen:
+            return d[key]
+        seen.add(key)
+    raise KeyError(k)
 """
 fuka5.substrate.updates
 -----------------------
@@ -16,8 +49,6 @@ This module ties together:
 It stays framework-free (NumPy only). Higher-level scheduling (epochs, ON/OFF)
 and I/O are handled in fuka5.run.sim_cli and fuka5.io.*
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
@@ -94,40 +125,24 @@ def _sum_power_over_band(M_e: np.ndarray, idxs: List[int]) -> float:
     sel = M_e[idxs]
     return float(np.sum(np.abs(sel)**2))
 
-# --- NEW: tolerant frequency helpers ----------------------------------------
-
-def _normalize_freq_dict(d: Dict) -> Dict[float, np.ndarray]:
+def _lockins_for_subset(graph: Graph, C_edge: np.ndarray, node_G_leak: np.ndarray,
+                        sources: Sources, t: np.ndarray, subset: Optional[List[str]]) -> Dict[float, np.ndarray]:
     """
-    Return a copy with keys coerced to float where possible.
-    Accepts keys like 11000, 11000.0, "11000".
+    Solve and compute lock-ins only for the subset of sources (None means all).
+    Returns dict[f] -> (E,) complex lockins for each edge.
     """
-    nd: Dict[float, np.ndarray] = {}
-    for k, v in d.items():
-        try:
-            kf = float(k)
-        except Exception:
-            try:
-                kf = float(str(k))
-            except Exception:
-                continue
-        nd[kf] = v
-    return nd
-
-def _safe_stack(d: Dict[float, np.ndarray], name: str, freqs_f: List[float]) -> np.ndarray:
-    """
-    Stack per-frequency arrays from a dict with float keys.
-    If a frequency is missing, fill with zeros like a template value.
-    """
-    try:
-        tmpl = next(iter(d.values()))
-    except StopIteration:
-        raise ValueError(f"{name} dict is empty")
-    missing = [f for f in freqs_f if f not in d]
-    if missing:
-        # keep this a non-fatal warning so sims continue
-        print(f"[warn] Missing {name} frequencies: {missing[:5]}{' ...' if len(missing) > 5 else ''}")
-    vals = [d.get(f, np.zeros_like(tmpl)) for f in freqs_f]
-    return np.stack(vals, axis=0)
+    V_by_f, v_te = solve_all_and_synthesize(
+        graph=graph,
+        C_edge=C_edge,
+        G_edge=None,
+        node_G_leak=node_G_leak,
+        sources=sources,
+        t=t,
+        subset_sources=subset,
+        use_real_part=True,
+    )
+    lock = PhasorSolver.lockins(v_te, V_by_f.keys(), t)
+    return lock
 
 
 # ---------------------------
@@ -248,28 +263,26 @@ def step_epoch(
 
     # --- Per-edge local updates ---
     edge_rows: List[Dict] = []
-
     # Prepare band-wise lockins arrays per edge: shape (F, E), tolerant to key types/missing
-    # Normalize lock dicts and coerce frequency list to float keys
-    freqs_f = [float(f) for f in freqs]
+    freqs_f   = [float(f) for f in freqs]
     lock_allN = _normalize_freq_dict(lock_all)
     lock_s1N  = _normalize_freq_dict(lock_s1)
     lock_s1pN = _normalize_freq_dict(lock_s1p)
-
+    
     M_all = _safe_stack(lock_allN, "lock_all", freqs_f)   # complex (F,E)
     M_s1  = _safe_stack(lock_s1N,  "lock_s1",  freqs_f)
     M_s1p = _safe_stack(lock_s1pN, "lock_s1p", freqs_f)
-
+    
     # Per-node usable power proxy accumulator (for thermal/morphogenesis)
     Pplus_node = np.zeros(graph.N, dtype=np.float64)
-
+    
     # Iterate edges in solver order
     for k, e in enumerate(edges_sorted):
-        st = edge_states[e.id]
-
-        # Band powers attributed to each source
-        # sum |M|^2 over the band's frequencies for this edge index k
-        def _bp(MF, band):
+    st = edge_states[e.id]
+    
+    # Band powers attributed to each source
+    # sum |M|^2 over the band's frequencies for this edge index k
+    def _bp(MF, band):
             idxs = band_idxs.get(band, [])
             if not idxs:
                 return 0.0
