@@ -72,56 +72,6 @@ fig = go.Figure(go.Isosurface(
 ))
 fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=0, b=0), height=700)
 st.plotly_chart(fig, use_container_width=True)
-# ====== Edge overlay (auto-inserted) ======
-import pandas as pd, numpy as np
-from pathlib import Path
-from plotly import graph_objects as go
-
-_run_dir = Path('/home/busbar/fuka-runs/runs')/run_id
-_shards_dir = _run_dir/'shards'
-
-@st.cache_data(show_spinner=True, ttl=30)
-def _load_edges_epoch(ep, max_rows=8000):
-    import glob
-    import pyarrow.parquet as pq  # noqa: F401
-    dfs=[]
-    for f in glob.glob(str(_shards_dir/'edges_*.parquet')):
-        try:
-            df = pd.read_parquet(f, engine='pyarrow')
-        except Exception:
-            continue
-        dfe = df[df['epoch'] == int(ep)]
-        if not dfe.empty:
-            dfs.append(dfe)
-    if not dfs:
-        return pd.DataFrame()
-    return pd.concat(dfs).head(max_rows)
-
-with st.sidebar.expander('Edges overlay', expanded=False):
-    show_edges   = st.checkbox('Show edges', value=True)
-    color_key    = st.selectbox('Color by', ['C','B','A','E'], index=0)
-    max_edges    = st.slider('Max edges', 1000, 20000, 5000, step=1000)
-    edge_opacity = st.slider('Edge opacity (%)', 10, 100, 50)/100
-
-if show_edges:
-    edges = _load_edges_epoch(epoch, max_rows=max_edges)
-    if not edges.empty:
-        X = np.vstack([edges.x_u, edges.x_v, np.full_like(edges.x_u, np.nan)]).T.reshape(-1)
-        Y = np.vstack([edges.y_u, edges.y_v, np.full_like(edges.y_u, np.nan)]).T.reshape(-1)
-        Z = np.vstack([edges.z_u, edges.z_v, np.full_like(edges.z_u, np.nan)]).T.reshape(-1)
-        C = edges[color_key].to_numpy(dtype=float)
-        cmin, cmax = np.percentile(C,5), np.percentile(C,95)
-        if cmax <= cmin: cmax = cmin + 1e-9
-        Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
-        Cline = np.repeat(Cn, 3); Cline[2::3] = np.nan
-        fig.add_trace(go.Scatter3d(
-            x=X, y=Y, z=Z, mode='lines',
-            line=dict(width=2, color=Cline, colorscale='Viridis'),
-            opacity=edge_opacity, name=f'Edges ({len(edges)})'
-        ))
-        st.plotly_chart(fig, use_container_width=True)
-# ====== End overlay ======
-
 
 st.subheader("NPZ contents")
 st.dataframe(pd.DataFrame(
