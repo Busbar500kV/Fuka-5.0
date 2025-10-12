@@ -1,5 +1,28 @@
 from __future__ import annotations
 import streamlit as st
+# Robust slider that tolerates degenerate ranges (min == max)
+def safe_slider(label, min_value, max_value, value=None, step=None, **kwargs):
+    # Coerce to float where possible
+    try:
+        mn = float(min_value)
+    except Exception:
+        mn = 0.0
+    try:
+        mx = float(max_value)
+    except Exception:
+        mx = mn + 1.0
+
+    # Guarantee mx > mn
+    if not (mx > mn):
+        # choose a sane step
+        st.info(f"Adjusting slider range for '{label}' (min==max).")
+        if step is None:
+            step = 1.0
+        mx = mn + (float(step) if float(step) > 0 else 1.0)
+
+    if value is None:
+        value = mn
+    return safe_slider(label, min_value=mn, max_value=mx, value=value, step=step, **kwargs)
 st.set_page_config(page_title='Fuka 5.0', layout='wide')
 # ensure repo root is on sys.path when running from app/ subdir
 from pathlib import Path
@@ -80,8 +103,8 @@ except Exception:
         return {
             "band": st.selectbox("Band", ["low", "high"]),
             "gate_mode": st.selectbox("Gate mode", ["mix", "1", "1p"]),
-            "min_C_pct": st.slider("Min C percentile", 0.0, 100.0, 20.0, 1.0),
-            "min_B_pct": st.slider("Min B percentile", 0.0, 100.0, 20.0, 1.0),
+            "min_C_pct": safe_slider("Min C percentile", 0.0, 100.0, 20.0, 1.0),
+            "min_B_pct": safe_slider("Min B percentile", 0.0, 100.0, 20.0, 1.0),
             "color_key": st.selectbox("Edge color", ["C", "B", "A", "E"]),
         }
 # ---------------------------
