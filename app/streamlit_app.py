@@ -71,6 +71,91 @@ fig = go.Figure(go.Isosurface(
     showscale=False,
 ))
 fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=0, b=0), height=700)
+
+
+
+
+
+
+
+
+
+
+
+
+# ====== Nodes overlay
+with st.sidebar.expander("Nodes overlay", expanded=False):
+    show_core   = st.checkbox("Show core nodes", value=True,  key="nodes_show_core")
+    show_outer  = st.checkbox("Show outer nodes", value=False, key="nodes_show_outer")
+    node_stride = st.slider("Node stride", 1, 12, 3, key="nodes_stride")
+    node_size   = st.slider("Marker size", 1, 10, 4, key="nodes_size")
+    fallback_rho_points = st.checkbox("Fallback: show rho points if masks missing",
+                                      value=True, key="nodes_fallback_rho")
+    rho_quantile = st.slider("rho threshold quantile", 0.90, 0.999, 0.97,
+                             key="nodes_rho_quantile")
+
+# --- DEBUG: show the variables we rely on
+_dbg_run_id  = locals().get("run_id", None)
+_dbg_epoch   = locals().get("epoch", None)
+_dbg_gcp_cfg = locals().get("gcp_cfg", None)
+st.caption(f"[DBG] run_id={_dbg_run_id} epoch={_dbg_epoch} gcp_cfg={_dbg_gcp_cfg is not None}")
+
+from pathlib import Path as _Path
+_runs_dir  = _Path((_dbg_gcp_cfg or {}).get("runs_dir", "/home/busbar/fuka-runs")).expanduser()
+_runs_pref = (_dbg_gcp_cfg or {}).get("runs_prefix", "runs").strip("/")
+
+_epoch_path = None
+if _dbg_run_id is not None and _dbg_epoch is not None:
+    _epoch_path = _runs_dir / f"{_runs_pref}/{_dbg_run_id}/volumes/epoch_{int(_dbg_epoch):04d}.npz"
+st.caption(f"[DBG] epoch_path={_epoch_path} exists={( _epoch_path and _epoch_path.exists() )}")
+
+_core_ct = _outer_ct = _rho_ct = 0
+try:
+    import numpy as np
+    if _epoch_path and _epoch_path.exists():
+        npz = np.load(_epoch_path, allow_pickle=False)
+        st.caption(f"[DBG] npz keys: {list(npz.keys())}")
+
+        core  = npz.get("core_mask")
+        outer = npz.get("outer_mask")
+
+        def _mask_points(mask, stride):
+            z, y, x = np.where(mask)
+            if z.size == 0: return np.array([]), np.array([]), np.array([])
+            sel = (np.arange(z.size) % max(1,int(stride))) == 0
+            return x[sel], y[sel], z[sel]
+
+        if show_core and core is not None:
+            _x,_y,_z = _mask_points(core, node_stride); _core_ct = _x.size
+            if _core_ct:
+                fig.add_trace(go.Scatter3d(
+                    x=_x, y=_y, z=_z, mode="markers", name="core",
+                    marker=dict(size=node_size, color="yellow"), opacity=1.0))
+
+        if show_outer and outer is not None:
+            _x,_y,_z = _mask_points(outer, node_stride); _outer_ct = _x.size
+            if _outer_ct:
+                fig.add_trace(go.Scatter3d(
+                    x=_x, y=_y, z=_z, mode="markers", name="outer",
+                    marker=dict(size=node_size, color="magenta"), opacity=0.9))
+
+        if fallback_rho_points and (_core_ct + _outer_ct == 0):
+            rho = npz.get("rho")
+            if rho is not None:
+                thr = float(np.quantile(rho[np.isfinite(rho)], float(rho_quantile)))
+                zz, yy, xx = np.where(rho >= thr)
+                if zz.size:
+                    sel = (np.arange(zz.size) % max(1,int(node_stride))) == 0
+                    xx, yy, zz = xx[sel], yy[sel], zz[sel]
+                    _rho_ct = int(xx.size)
+                    fig.add_trace(go.Scatter3d(
+                        x=xx, y=yy, z=zz, mode="markers", name=f"rho≥q{rho_quantile:.3f}",
+                        marker=dict(size=node_size, color="cyan"), opacity=0.9))
+except Exception as _e:
+    st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
+
+st.caption(f"Nodes overlay: core={_core_ct} outer={_outer_ct} rhoPts={_rho_ct}")
+# ====== /Nodes overlay ======
 st.plotly_chart(fig, use_container_width=True)
 # ====== Edge overlay (auto-inserted) ======
 import pandas as pd, numpy as np
