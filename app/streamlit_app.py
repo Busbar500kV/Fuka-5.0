@@ -47,7 +47,21 @@ if not epochs:
     st.warning("No epoch_####.npz yet—let the sim write a few.")
     st.stop()
 
-epoch = st.sidebar.selectbox("Epoch", epochs, index=len(epochs)-1)
+if "epoch_idx" not in st.session_state: st.session_state.epoch_idx = len(epochs)-1
+c1, c2 = st.sidebar.columns(2)
+with c1:
+    if st.button("⏪ Prev"):
+        st.session_state.epoch_idx = max(0, st.session_state.epoch_idx-1)
+        st.rerun()
+with c2:
+    if st.button("⏩ Next"):
+        st.session_state.epoch_idx = min(len(epochs)-1, st.session_state.epoch_idx+1)
+        st.rerun()
+epoch = st.sidebar.selectbox("Epoch", epochs, index=st.session_state.epoch_idx, key="epoch_select")
+try:
+    st.session_state.epoch_idx = epochs.index(epoch)  # keep index in sync with dropdown
+except Exception:
+    pass
 iso_pct = st.sidebar.slider("Isosurface percentile (rho)", 50, 99, 75)
 opacity = st.sidebar.slider("Isosurface opacity", 1, 100, 25) / 100.0
 
@@ -86,7 +100,7 @@ fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=0, b=0)
 # ====== Nodes overlay
 with st.sidebar.expander("Nodes overlay", expanded=False):
     show_core   = st.checkbox("Show core nodes", value=True,  key="nodes_show_core")
-    show_outer  = st.checkbox("Show outer nodes", value=False, key="nodes_show_outer")
+    show_outer  = st.checkbox("Show outer nodes", value=True, key="nodes_show_outer")
     node_stride = st.slider("Node stride", 1, 12, 3, key="nodes_stride")
     node_size   = st.slider("Marker size", 1, 10, 4, key="nodes_size")
     fallback_rho_points = st.checkbox("Fallback: show rho points if masks missing",
@@ -156,7 +170,6 @@ except Exception as _e:
 
 # st.caption(f"Nodes overlay: core={_core_ct} outer={_outer_ct} rhoPts={_rho_ct}")
 # ====== /Nodes overlay ======
-st.plotly_chart(fig, use_container_width=True)
 # ====== Edge overlay (auto-inserted) ======
 import pandas as pd, numpy as np
 from pathlib import Path
@@ -204,8 +217,9 @@ if show_edges:
             line=dict(width=2, color=Cline, colorscale='Viridis'),
             opacity=edge_opacity, name=f'Edges ({len(edges)})'
         ))
-        st.plotly_chart(fig, use_container_width=True)
+        # (overlay suppressed)         st.plotly_chart(fig, use_container_width=True)
 # ====== End overlay ======
+st.plotly_chart(fig, use_container_width=True)
 
 
 st.subheader("NPZ contents")
