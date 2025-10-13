@@ -98,7 +98,7 @@ with st.sidebar.expander("Nodes overlay", expanded=False):
 _dbg_run_id  = locals().get("run_id", None)
 _dbg_epoch   = locals().get("epoch", None)
 _dbg_gcp_cfg = locals().get("gcp_cfg", None)
-st.caption(f"[DBG] run_id={_dbg_run_id} epoch={_dbg_epoch} gcp_cfg={_dbg_gcp_cfg is not None}")
+# st.caption(f"[DBG] run_id={_dbg_run_id} epoch={_dbg_epoch} gcp_cfg={_dbg_gcp_cfg is not None}")
 
 from pathlib import Path as _Path
 _runs_dir  = _Path((_dbg_gcp_cfg or {}).get("runs_dir", "/home/busbar/fuka-runs")).expanduser()
@@ -107,14 +107,14 @@ _runs_pref = (_dbg_gcp_cfg or {}).get("runs_prefix", "runs").strip("/")
 _epoch_path = None
 if _dbg_run_id is not None and _dbg_epoch is not None:
     _epoch_path = _runs_dir / f"{_runs_pref}/{_dbg_run_id}/volumes/epoch_{int(_dbg_epoch):04d}.npz"
-st.caption(f"[DBG] epoch_path={_epoch_path} exists={( _epoch_path and _epoch_path.exists() )}")
+# st.caption(f"[DBG] epoch_path={_epoch_path} exists={( _epoch_path and _epoch_path.exists() )}")
 
 _core_ct = _outer_ct = _rho_ct = 0
 try:
     import numpy as np
     if _epoch_path and _epoch_path.exists():
         npz = np.load(_epoch_path, allow_pickle=False)
-        st.caption(f"[DBG] npz keys: {list(npz.keys())}")
+#         st.caption(f"[DBG] npz keys: {list(npz.keys())}")
 
         core  = npz.get("core_mask")
         outer = npz.get("outer_mask")
@@ -154,7 +154,7 @@ try:
 except Exception as _e:
     st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
 
-st.caption(f"Nodes overlay: core={_core_ct} outer={_outer_ct} rhoPts={_rho_ct}")
+# st.caption(f"Nodes overlay: core={_core_ct} outer={_outer_ct} rhoPts={_rho_ct}")
 # ====== /Nodes overlay ======
 st.plotly_chart(fig, use_container_width=True)
 # ====== Edge overlay (auto-inserted) ======
