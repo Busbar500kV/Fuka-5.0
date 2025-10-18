@@ -12,6 +12,9 @@ else
   exit 1
 fi
 
+# Ensure Python can import the repo package (fuka5/)
+export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
+
 # Python/venv
 VENV_DIR="/opt/fuka-venv"
 PYTHON_BIN="${VENV_DIR}/bin/python"
@@ -27,6 +30,7 @@ echo "[FUKA] Starting local simulation"
 echo "       RUN_ID=${RUN_ID}"
 echo "       CFG=${CFG_PATH}"
 echo "       PY=${PYTHON_BIN}"
+echo "       PYTHONPATH=${PYTHONPATH}"
 
 sudo -E "${PYTHON_BIN}" "${RUN_SCRIPT}" --config "${CFG_PATH}" --run_id "${RUN_ID}" \
   >> "${LOG_DIR}/sim_${RUN_ID}.log" 2>&1
