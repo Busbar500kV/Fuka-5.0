@@ -36,8 +36,8 @@ def get_client():
 
 def load_gcp_config(gcp_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    Return a fake local config so the UI can initialize seamlessly.
-    Accepts an optional path argument for compatibility.
+    Return a local config so the UI can initialize seamlessly.
+    Accepts an optional path argument for compatibility with the old UI.
     """
     return {
         "storage": "local",
@@ -46,20 +46,49 @@ def load_gcp_config(gcp_path: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _is_valid_run_dir(p: Path) -> bool:
+    """A directory is a 'run' if it has a manifest.json or at least one volume NPZ."""
+    if not p.is_dir():
+        return False
+    if (p / "manifest.json").exists():
+        return True
+    if (p / "volumes").exists() and any((p / "volumes").glob("epoch_*.npz")):
+        return True
+    return False
+
+
 def list_runs(cfg: Dict[str, Any]) -> List[str]:
-    """List all local runs."""
+    """
+    List local runs: only directories that look like runs.
+    Sorted by most-recent mtime descending.
+    """
     root = _runs_root(cfg)
-    runs = [p.name for p in root.iterdir() if p.is_dir()]
-    runs.sort(reverse=True)
-    return runs
+    items = []
+    for child in root.iterdir():
+        if _is_valid_run_dir(child):
+            try:
+                mt = child.stat().st_mtime
+            except Exception:
+                mt = 0.0
+            items.append((mt, child.name))
+    items.sort(reverse=True)  # newest first
+    return [name for _, name in items]
 
 
 def list_blobs(cfg: Dict[str, Any], run_id: str) -> List[str]:
-    """Return local files inside a given run folder."""
+    """Return local files inside a given run folder (relative paths)."""
     root = _runs_root(cfg) / run_id
     if not root.exists():
         return []
-    return [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()]
+    rels: List[str] = []
+    for p in root.rglob("*"):
+        if p.is_file():
+            try:
+                rels.append(str(p.relative_to(root)))
+            except Exception:
+                pass
+    rels.sort()
+    return rels
 
 
 def download_blob_to_file(cfg: Dict[str, Any], src: str, dest: str) -> None:
