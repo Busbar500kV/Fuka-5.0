@@ -1,0 +1,24 @@
+{
+  "grid_shape": [64, 64, 64],
+  "seed": 1234,
+  "rho_blur": 2.0,
+
+  "graph_stride": 6,
+  "graph_knn": 6,
+  "graph_max_dist": 24.0,
+
+  "edge_decay": 0.12,
+  "edge_eps_gain": 0.25,
+
+  "num_sources": 12,
+  "dt": 0.05,
+  "epochs": 24,
+
+  "flush_every": 4,
+  "save_every": 1,
+  "manifest_every": 4,
+  "checkpoint_every": 4,
+
+  "runs_dir": "${F5_LOCAL_RUNS_DIR}",
+  "runs_prefix": "${F5_RUNS_PREFIX}"
+}
