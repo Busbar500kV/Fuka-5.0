@@ -19,7 +19,9 @@ export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 VENV_DIR="/opt/fuka-venv"
 PYTHON_BIN="${VENV_DIR}/bin/python"
 RUN_SCRIPT="${REPO_DIR}/fuka5/run/sim_cli.py"
-LOG_DIR="/var/log/fuka"
+
+# User-writable log dir inside the repo (avoid sudo so PYTHONPATH is kept)
+LOG_DIR="${REPO_DIR}/.logs"
 mkdir -p "$LOG_DIR"
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -31,8 +33,10 @@ echo "       RUN_ID=${RUN_ID}"
 echo "       CFG=${CFG_PATH}"
 echo "       PY=${PYTHON_BIN}"
 echo "       PYTHONPATH=${PYTHONPATH}"
+echo "       LOG_DIR=${LOG_DIR}"
 
-sudo -E "${PYTHON_BIN}" "${RUN_SCRIPT}" --config "${CFG_PATH}" --run_id "${RUN_ID}" \
+# Run without sudo so PYTHONPATH is preserved
+"${PYTHON_BIN}" "${RUN_SCRIPT}" --config "${CFG_PATH}" --run_id "${RUN_ID}" \
   >> "${LOG_DIR}/sim_${RUN_ID}.log" 2>&1
 
 echo "[FUKA] Done. Log: ${LOG_DIR}/sim_${RUN_ID}.log"
