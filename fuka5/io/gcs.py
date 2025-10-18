@@ -1,22 +1,20 @@
 # Local-first replacement for the old GCS helper.
-# We do NOT touch the UI; we make the backend default to local when F5_STORAGE=local
-# or when cloud credentials are unavailable.
+# Keeps the same public symbols expected by the UI, but everything runs locally.
 
 from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import os
+import os, json
 
 
 # ----------------------------
-# Small env/config helpers
+# Env + Config helpers
 # ----------------------------
 
 def env_get(key: str, default: Optional[str] = None) -> Optional[str]:
     return os.environ.get(key, default)
 
 def _storage_mode(cfg: Dict[str, Any]) -> str:
-    # If caller provides storage, honor it; otherwise fall back to env; default to local
     return str(cfg.get("storage") or env_get("F5_STORAGE", "local")).lower()
 
 def _runs_root(cfg: Dict[str, Any]) -> Path:
@@ -28,64 +26,64 @@ def _runs_root(cfg: Dict[str, Any]) -> Path:
 
 
 # ----------------------------
-# Public API used by the UI
+# Public API used by UI
 # ----------------------------
 
 def get_client():
+    """Dummy client for compatibility; real GCS disabled."""
+    return None
+
+
+def load_gcp_config() -> Dict[str, Any]:
     """
-    Backward-compat stub. The old code expected a GCS client here.
-    We only return a real client if explicitly using 'gcs' mode and creds exist.
+    Return a fake local config so the UI can initialize seamlessly.
     """
-    mode = _storage_mode({})
-    if mode == "gcs":
-        # If someone ever re-enables GCS explicitly, raise a clean error explaining how to proceed.
-        raise RuntimeError(
-            "GCS mode requested but this build is local-first. "
-            "Set F5_STORAGE=local (recommended)."
-        )
-    return None  # local mode: no client needed
+    return {
+        "storage": "local",
+        "runs_dir": env_get("F5_LOCAL_RUNS_DIR", "/home/busbar/fuka-runs"),
+        "runs_prefix": env_get("F5_RUNS_PREFIX", "runs"),
+    }
 
 
 def list_runs(cfg: Dict[str, Any]) -> List[str]:
-    """
-    Return a list of run_ids visible to the UI.
+    """List all local runs."""
+    root = _runs_root(cfg)
+    runs = [p.name for p in root.iterdir() if p.is_dir()]
+    runs.sort(reverse=True)
+    return runs
 
-    In local mode, this lists directories under:
-        <runs_dir>/<runs_prefix>/
-    and returns their names as strings.
-    """
-    # Local-first
-    if _storage_mode(cfg) != "gcs":
-        root = _runs_root(cfg)
-        # Only include directories that look like FUKA_5_0_* (but keep it permissive)
-        runs = [p.name for p in root.iterdir() if p.is_dir()]
-        runs.sort(reverse=True)
-        return runs
 
-    # If someone truly sets storage=gcs, fail fast with a clear message.
-    raise RuntimeError(
-        "GCS listing is disabled in this local-first build. "
-        "Set F5_STORAGE=local to browse /home/busbar/fuka-runs/runs."
-    )
+def list_blobs(cfg: Dict[str, Any], run_id: str) -> List[str]:
+    """Return local files inside a given run folder."""
+    root = _runs_root(cfg) / run_id
+    if not root.exists():
+        return []
+    return [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()]
+
+
+def download_blob_to_file(cfg: Dict[str, Any], src: str, dest: str) -> None:
+    """Local copy helper for compatibility."""
+    src_path = Path(src)
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    if src_path.exists():
+        dest_path.write_bytes(src_path.read_bytes())
+
+
+def gcs_path(cfg: Dict[str, Any], run_id: str, *parts: str) -> str:
+    """In local mode, just return the full local path."""
+    return str(_runs_root(cfg) / run_id / Path(*parts))
 
 
 # ----------------------------
-# Upload helpers (no-ops for local)
-# These remain here so older call-sites import cleanly.
+# Upload helpers (no-ops)
 # ----------------------------
 
 def upload_bytes(cfg: Dict[str, Any], payload: bytes, dest_uri: str, content_type: Optional[str] = None) -> None:
-    """
-    No-op in local mode. Present for compatibility if any code path calls it.
-    """
-    mode = _storage_mode(cfg)
-    if mode == "gcs":
-        raise RuntimeError("upload_bytes: GCS disabled in this build (use local storage).")
+    return None
 
 def upload_json(cfg: Dict[str, Any], obj: Any, dest_uri: str) -> None:
-    """
-    No-op in local mode. Present for compatibility if any code path calls it.
-    """
-    mode = _storage_mode(cfg)
-    if mode == "gcs":
-        raise RuntimeError("upload_json: GCS disabled in this build (use local storage).")
+    path = Path(dest_uri)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
