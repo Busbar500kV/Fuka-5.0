@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
 import numpy as np
@@ -46,6 +46,11 @@ def _resolve_runs_root(cfg: Dict[str, Any]) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     return root
 
+def _runs_base_only(cfg: Dict[str, Any]) -> Path:
+    """Return just the base directory (without runs_prefix)."""
+    base = os.getenv("F5_LOCAL_RUNS_DIR") or cfg.get("runs_dir") or "/home/busbar/fuka-runs"
+    return Path(base)
+
 def _pick_run_id(run_id: Optional[str]) -> str:
     return run_id or f"FUKA_5_0_{_utc_stamp()}"
 
@@ -57,8 +62,7 @@ def _summarize_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "edge_decay", "edge_eps_gain",
         "num_sources", "dt", "epochs",
     ]
-    out = {k: cfg[k] for k in keys if k in cfg}
-    return out
+    return {k: cfg[k] for k in keys if k in cfg}
 
 def _default_cfg() -> Dict[str, Any]:
     return {
@@ -77,6 +81,8 @@ def _default_cfg() -> Dict[str, Any]:
         "save_every": 1,   # save an NPZ every epoch (tweakable)
         "manifest_every": 4,
         "checkpoint_every": 4,
+        "runs_dir": "${F5_LOCAL_RUNS_DIR}",
+        "runs_prefix": "${F5_RUNS_PREFIX}",
     }
 
 # ---------------------------------------------------------------------
@@ -88,7 +94,8 @@ def run_sim(config_path: Optional[str], run_id_arg: Optional[str]) -> str:
     cfg = _default_cfg()
     cfg.update(_load_cfg(config_path))
 
-    runs_root = _resolve_runs_root(cfg)
+    runs_root = _resolve_runs_root(cfg)   # /home/busbar/fuka-runs/runs
+    runs_base = _runs_base_only(cfg)      # /home/busbar/fuka-runs
     run_id = _pick_run_id(run_id_arg)
     run_dir = runs_root / run_id
     (run_dir / "volumes").mkdir(parents=True, exist_ok=True)
@@ -101,13 +108,11 @@ def run_sim(config_path: Optional[str], run_id_arg: Optional[str]) -> str:
     graph = build_graph(cfg, world)
     sources = make_sources(cfg, world)
 
-    # Writers
+    # Writers (IMPORTANT: pass base dir, not runs_root)
     gcp_cfg = {
-        # Storage facade will treat these envs if present; we still pass
-        # run root through storage_path() indirection.
-        "runs_dir": str(runs_root),
+        "runs_dir": str(runs_base),   # base only
         "runs_prefix": "runs",
-        "storage": os.getenv("F5_STORAGE", "local"),
+        "storage": "local",
     }
     edges_writer = ShardWriter(gcp_cfg, run_id, kind="edges", local_dir=str(run_dir), flush_every=int(cfg.get("flush_every", 4)))
     metrics_writer = ShardWriter(gcp_cfg, run_id, kind="metrics", local_dir=str(run_dir), flush_every=int(cfg.get("flush_every", 4)))
@@ -125,6 +130,8 @@ def run_sim(config_path: Optional[str], run_id_arg: Optional[str]) -> str:
         seeds=seeds,
     )
     validate_manifest(manifest)
+
+    # Write initial manifest at run start
     write_manifest(gcp_cfg, run_id, manifest)
 
     # Epoch loop
@@ -179,6 +186,8 @@ def run_sim(config_path: Optional[str], run_id_arg: Optional[str]) -> str:
         "epochs": epochs,
         "last_time": t,
     }
+
+    # Always write final manifest and checkpoint
     write_manifest(gcp_cfg, run_id, manifest)
     write_checkpoint(gcp_cfg, run_id, str(run_dir), name="final", payload={"epochs": epochs, "time": t})
     return run_id
