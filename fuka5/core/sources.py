@@ -1,115 +1,65 @@
-"""
-fuka5.core.sources
-------------------
-Multi-source registry and spatial capacitive coupling to graph nodes.
-
-Responsibilities
-* Parse a JSON-like config:
-    {
-      "sources":[ {"name":"s1","loc":[x,y,z],"tones":[{"f":..,"A":..,"phi_deg":..}, ...]}, ...],
-      "coupling": {"base_C": 1e-12, "range": 6.0}
-    }
-* Provide per-frequency complex source amplitudes.
-* Build tiny capacitive taps from each source to nearby graph nodes, scaled by distance
-  and local epsilon if desired (kept simple here; epsilon scaling can be folded in graph).
-* Expose a compact structure for the physics solver:
-    - tones: dict[freq_hz] -> list of SourceDrive
-    - taps:  dict[source_name] -> list of (node_id, C_couple)
-
-Notes
-- Phases are stored in radians; complex amplitude = A * exp(j*phi).
-- The physics layer will superpose contributions from all sources at each frequency.
-"""
-
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Any
 import numpy as np
+from typing import Any, Dict, List
 
 
-@dataclass
-class Tone:
-    f: float              # Hz
-    A: float              # amplitude (arbitrary units)
-    phi_rad: float        # radians
+# ---------------------------------------------------------------------
+# Source generation utilities
+# ---------------------------------------------------------------------
 
-@dataclass
-class SourceDef:
-    name: str
-    loc: Tuple[float, float, float]  # voxel coordinates (same space as graph/world)
-    tones: List[Tone]
+def make_sources(cfg: Dict[str, Any], world: Dict[str, np.ndarray]) -> List[Dict[str, Any]]:
+    """
+    Create a list of source descriptors distributed through the world volume.
 
-@dataclass
-class SourceDrive:
-    name: str
-    f: float
-    amp_complex: complex
+    Each source is a dict containing:
+      id, position (x,y,z), amplitude, frequency
+    """
+    n_sources = int(cfg.get("num_sources", 12))
+    shape = world["rho"].shape
+
+    rng = np.random.default_rng(int(cfg.get("seed", 1234)))
+    positions = rng.uniform(low=0.1, high=0.9, size=(n_sources, 3))
+    positions *= np.array(shape)[None, :]
+
+    freqs = np.linspace(1.0, 3.0, n_sources) + rng.normal(0, 0.05, n_sources)
+    amps = np.clip(rng.normal(1.0, 0.25, n_sources), 0.3, 2.0)
+
+    sources: List[Dict[str, Any]] = []
+    for i in range(n_sources):
+        s = {
+            "id": i,
+            "pos": positions[i].astype(np.float32),
+            "amplitude": float(amps[i]),
+            "frequency": float(freqs[i]),
+        }
+        sources.append(s)
+
+    return sources
 
 
-class Sources:
-    def __init__(self, defs: List[SourceDef], base_C: float = 1e-12, rng: np.random.Generator | None = None):
-        self.defs = defs
-        self.base_C = float(base_C)
-        self.rng = rng or np.random.default_rng(0)
+# ---------------------------------------------------------------------
+# Field injection (used during epoch updates)
+# ---------------------------------------------------------------------
 
-        # Map: freq -> list of SourceDrive
-        self.freq_to_drives: Dict[float, List[SourceDrive]] = {}
-        for sd in defs:
-            for t in sd.tones:
-                self.freq_to_drives.setdefault(float(t.f), []).append(
-                    SourceDrive(name=sd.name, f=float(t.f), amp_complex=t.A * np.exp(1j * t.phi_rad))
-                )
+def inject_sources(world: Dict[str, np.ndarray], sources: List[Dict[str, Any]], t: float) -> np.ndarray:
+    """
+    Produce a perturbation field shaped by the sources for time t.
+    Returns an array of same shape as world["rho"].
+    """
+    shape = world["rho"].shape
+    field = np.zeros(shape, dtype=np.float32)
+    zz, yy, xx = np.meshgrid(
+        np.arange(shape[0]),
+        np.arange(shape[1]),
+        np.arange(shape[2]),
+        indexing="ij",
+    )
 
-        # Taps are built per graph after nodes are known
-        self.taps: Dict[str, List[Tuple[int, float]]] = {}  # name -> [(node_id, C_couple), ...]
+    for s in sources:
+        px, py, pz = s["pos"]
+        dist2 = (xx - px) ** 2 + (yy - py) ** 2 + (zz - pz) ** 2
+        w = np.exp(-dist2 / (2 * (shape[0] * 0.05) ** 2))
+        osc = s["amplitude"] * np.sin(2 * np.pi * s["frequency"] * t)
+        field += (w * osc).astype(np.float32)
 
-    # ------------- Builders -------------
-
-    @staticmethod
-    def from_config_dict(d: Dict[str, Any]) -> "Sources":
-        defs: List[SourceDef] = []
-        for sd in d.get("sources", []):
-            tones = [Tone(f=float(t["f"]), A=float(t["A"]), phi_rad=np.deg2rad(float(t.get("phi_deg", 0.0))))
-                     for t in sd.get("tones", [])]
-            defs.append(SourceDef(name=str(sd["name"]), loc=tuple(sd["loc"]), tones=tones))
-        base_C = float(d.get("coupling", {}).get("base_C", 1e-12))
-        return Sources(defs, base_C=base_C)
-
-    def build_taps_to_graph(self, node_positions: np.ndarray, coupling_cfg: Dict[str, Any]) -> None:
-        """
-        Build small capacitive couplings from each source to nearby nodes.
-        C_couple = base_C * exp(-(dist / range)^2)
-        """
-        r = float(coupling_cfg.get("range", 6.0))
-        inv_r2 = 1.0 / max(1e-6, r * r)
-        taps: Dict[str, List[Tuple[int, float]]] = {}
-
-        for sd in self.defs:
-            src = np.array(sd.loc, dtype=np.float32)
-            d2 = np.sum((node_positions - src[None, :]) ** 2, axis=1)
-            # keep nodes within ~3*r (numerically small beyond)
-            keep = d2 < (9.0 * r * r)
-            idxs = np.where(keep)[0]
-            if idxs.size == 0:
-                taps[sd.name] = []
-                continue
-            Cvals = self.base_C * np.exp(-d2[idxs] * inv_r2)
-            taps[sd.name] = [(int(i), float(c)) for i, c in zip(idxs, Cvals)]
-
-        self.taps = taps
-
-    # ------------- Queries -------------
-
-    def frequencies(self) -> List[float]:
-        """List of all unique source frequencies."""
-        fs = list(self.freq_to_drives.keys())
-        fs.sort()
-        return fs
-
-    def drives_at(self, f: float) -> List[SourceDrive]:
-        """Returns the list of SourceDrive at frequency f."""
-        return self.freq_to_drives.get(float(f), [])
-
-    def taps_for(self, name: str) -> List[Tuple[int, float]]:
-        """Returns list of (node_id, C_couple) for source `name`."""
-        return self.taps.get(name, [])
+    return field
