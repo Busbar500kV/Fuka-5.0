@@ -1,145 +1,91 @@
-"""
-fuka5.io.gcs
-------------
-Thin wrapper over google-cloud-storage using Application Default Credentials (ADC).
-
-Capabilities
-* get_client()            -> GCS client (ADC)
-* bucket_and_prefix()     -> (bucket_name, runs_prefix) from env-expanded config
-* gcs_path(run_id, ...)   -> "gs://bucket/prefix/run_id/..."
-* upload_bytes(...), upload_file(...), upload_json(...)
-* list_runs()             -> enumerate run folder names under runs_prefix
-* list_blobs(prefix)      -> list blob names under a prefix
-* download_blob_to_file(...)
-"""
+# Local-first replacement for the old GCS helper.
+# We do NOT touch the UI; we make the backend default to local when F5_STORAGE=local
+# or when cloud credentials are unavailable.
 
 from __future__ import annotations
-from typing import Tuple, List, Optional, Dict, Any
-import io
-import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 import os
 
-from google.cloud import storage
 
-from .. import load_json_with_env, env_get
+# ----------------------------
+# Small env/config helpers
+# ----------------------------
+
+def env_get(key: str, default: Optional[str] = None) -> Optional[str]:
+    return os.environ.get(key, default)
+
+def _storage_mode(cfg: Dict[str, Any]) -> str:
+    # If caller provides storage, honor it; otherwise fall back to env; default to local
+    return str(cfg.get("storage") or env_get("F5_STORAGE", "local")).lower()
+
+def _runs_root(cfg: Dict[str, Any]) -> Path:
+    base = env_get("F5_LOCAL_RUNS_DIR") or str(cfg.get("runs_dir") or "/home/busbar/fuka-runs")
+    prefix = env_get("F5_RUNS_PREFIX") or str(cfg.get("runs_prefix") or "runs")
+    root = Path(base) / prefix
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
-# ---------------------------
-# Client & config
-# ---------------------------
+# ----------------------------
+# Public API used by the UI
+# ----------------------------
 
-def get_client() -> storage.Client:
+def get_client():
     """
-    Return a google-cloud-storage Client using ADC.
-    Ensure VM has a service account with Storage access or run:
-       gcloud auth application-default login
+    Backward-compat stub. The old code expected a GCS client here.
+    We only return a real client if explicitly using 'gcs' mode and creds exist.
     """
-    return storage.Client(project=env_get("F5_GCP_PROJECT_ID"))
+    mode = _storage_mode({})
+    if mode == "gcs":
+        # If someone ever re-enables GCS explicitly, raise a clean error explaining how to proceed.
+        raise RuntimeError(
+            "GCS mode requested but this build is local-first. "
+            "Set F5_STORAGE=local (recommended)."
+        )
+    return None  # local mode: no client needed
 
-def load_gcp_config(path: str) -> Dict[str, Any]:
-    """Load gcp.default.json and expand env placeholders."""
-    return load_json_with_env(path)
 
-def bucket_and_prefix(gcp_cfg: Dict[str, Any]) -> Tuple[str, str]:
+def list_runs(cfg: Dict[str, Any]) -> List[str]:
     """
-    Extract bucket and runs_prefix; bucket must be 'gs://name'.
-    Returns (bucket_name, runs_prefix)
+    Return a list of run_ids visible to the UI.
+
+    In local mode, this lists directories under:
+        <runs_dir>/<runs_prefix>/
+    and returns their names as strings.
     """
-    bucket_uri = gcp_cfg["bucket"]
-    assert bucket_uri.startswith("gs://"), "bucket must start with gs://"
-    bucket_name = bucket_uri[len("gs://"):]
-    prefix = gcp_cfg.get("runs_prefix", "runs").strip("/")
+    # Local-first
+    if _storage_mode(cfg) != "gcs":
+        root = _runs_root(cfg)
+        # Only include directories that look like FUKA_5_0_* (but keep it permissive)
+        runs = [p.name for p in root.iterdir() if p.is_dir()]
+        runs.sort(reverse=True)
+        return runs
 
-    return bucket_name, prefix
-
-
-# ---------------------------
-# Path helpers
-# ---------------------------
-
-def gcs_path(gcp_cfg: Dict[str, Any], run_id: str, *parts: str) -> str:
-    """Return full gs:// path under runs_prefix/run_id/ plus parts."""
-    bucket_name, prefix = bucket_and_prefix(gcp_cfg)
-    tail = "/".join([prefix, run_id] + list(parts)).strip("/")
-    return f"gs://{bucket_name}/{tail}"
+    # If someone truly sets storage=gcs, fail fast with a clear message.
+    raise RuntimeError(
+        "GCS listing is disabled in this local-first build. "
+        "Set F5_STORAGE=local to browse /home/busbar/fuka-runs/runs."
+    )
 
 
-# ---------------------------
-# Uploads
-# ---------------------------
+# ----------------------------
+# Upload helpers (no-ops for local)
+# These remain here so older call-sites import cleanly.
+# ----------------------------
 
-def upload_bytes(gcp_cfg: Dict[str, Any], data: bytes, dest_path: str, content_type: Optional[str] = None) -> None:
+def upload_bytes(cfg: Dict[str, Any], payload: bytes, dest_uri: str, content_type: Optional[str] = None) -> None:
     """
-    Upload raw bytes to gs://... path.
+    No-op in local mode. Present for compatibility if any code path calls it.
     """
-    client = get_client()
-    bucket_name, _ = bucket_and_prefix(gcp_cfg)
-    assert dest_path.startswith("gs://"), "dest_path must be gs://"
-    # parse blob name
-    name = dest_path.split("/", 3)[3]
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(name)
-    blob.upload_from_file(io.BytesIO(data), size=len(data), content_type=content_type)
+    mode = _storage_mode(cfg)
+    if mode == "gcs":
+        raise RuntimeError("upload_bytes: GCS disabled in this build (use local storage).")
 
-def upload_json(gcp_cfg: Dict[str, Any], obj: Dict[str, Any], dest_path: str) -> None:
-    payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-    upload_bytes(gcp_cfg, payload, dest_path, content_type="application/json")
-
-def upload_file(gcp_cfg: Dict[str, Any], local_path: str, dest_path: str, content_type: Optional[str] = None) -> None:
-    client = get_client()
-    bucket_name, _ = bucket_and_prefix(gcp_cfg)
-    assert dest_path.startswith("gs://")
-    name = dest_path.split("/", 3)[3]
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(name)
-    blob.upload_from_filename(local_path, content_type=content_type)
-
-
-# ---------------------------
-# Listings
-# ---------------------------
-
-def list_blobs(gcp_cfg: Dict[str, Any], prefix_path: str) -> List[str]:
+def upload_json(cfg: Dict[str, Any], obj: Any, dest_uri: str) -> None:
     """
-    List blob names under a given gs://<bucket>/<prefix>.
-    Returns the object names (no bucket).
+    No-op in local mode. Present for compatibility if any code path calls it.
     """
-    client = get_client()
-    bucket_name, _ = bucket_and_prefix(gcp_cfg)
-    assert prefix_path.startswith("gs://")
-    # name after bucket
-    name_prefix = prefix_path.split("/", 3)[3].rstrip("/") + "/"
-    bucket = client.bucket(bucket_name)
-    blobs = client.list_blobs(bucket, prefix=name_prefix)
-    return [b.name for b in blobs]
-
-def list_runs(gcp_cfg: Dict[str, Any]) -> List[str]:
-    """
-    Enumerate subfolders under runs_prefix (top-level run IDs).
-    """
-    client = get_client()
-    bucket_name, prefix = bucket_and_prefix(gcp_cfg)
-    bucket = client.bucket(bucket_name)
-    name_prefix = f"{prefix}/".strip("/")
-    runs = set()
-    for blob in client.list_blobs(bucket, prefix=name_prefix, delimiter=None):
-        # Expect keys like: runs/<RUN_ID>/manifest.json
-        parts = blob.name.split("/")
-        if len(parts) >= 2 and parts[0] == prefix and parts[1]:
-            runs.add(parts[1])
-    return sorted(runs)
-
-
-# ---------------------------
-# Downloads
-# ---------------------------
-
-def download_blob_to_file(gcp_cfg: Dict[str, Any], src_path: str, local_path: str) -> None:
-    client = get_client()
-    bucket_name, _ = bucket_and_prefix(gcp_cfg)
-    assert src_path.startswith("gs://")
-    name = src_path.split("/", 3)[3]
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(name)
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    blob.download_to_filename(local_path)
+    mode = _storage_mode(cfg)
+    if mode == "gcs":
+        raise RuntimeError("upload_json: GCS disabled in this build (use local storage).")
