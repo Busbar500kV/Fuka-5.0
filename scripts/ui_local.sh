@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fuka 5.0 — Local UI launcher (uses same env as sim)
+# Fuka 5.0 — Local UI launcher (with logging)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,9 +21,18 @@ APP="${REPO_DIR}/app/streamlit_app.py"
 VENV_DIR="/opt/fuka-venv"
 PY="${VENV_DIR}/bin/python"
 
+# Log to repo so it's easy to inspect
+LOG_DIR="${REPO_DIR}/.logs"
+mkdir -p "${LOG_DIR}"
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+LOG_FILE="${LOG_DIR}/ui_${STAMP}.log"
+
 echo "[FUKA] Launching UI"
 echo "       APP=${APP}"
 echo "       RUNS_DIR=${F5_LOCAL_RUNS_DIR}/${F5_RUNS_PREFIX}"
 echo "       PYTHONPATH=${PYTHONPATH}"
+echo "       LOG_FILE=${LOG_FILE}"
+echo "Open: http://localhost:8501"
 
-exec "${PY}" -m streamlit run "${APP}" --server.port 8501 --server.address 0.0.0.0
+# Run and tee logs (Ctrl-C to stop)
+"${PY}" -m streamlit run "${APP}" --server.port 8501 --server.address 0.0.0.0 2>&1 | tee -a "${LOG_FILE}"
