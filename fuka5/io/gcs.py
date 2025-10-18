@@ -34,9 +34,10 @@ def get_client():
     return None
 
 
-def load_gcp_config() -> Dict[str, Any]:
+def load_gcp_config(gcp_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Return a fake local config so the UI can initialize seamlessly.
+    Accepts an optional path argument for compatibility.
     """
     return {
         "storage": "local",
