@@ -26,7 +26,7 @@ load_env() {
     export F5_STORAGE="local"
     export F5_LOCAL_RUNS_DIR="/home/busbar/fuka-runs"
     export F5_RUNS_PREFIX="runs"
-  end
+  fi
   export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 }
 
@@ -89,7 +89,7 @@ case "${cmd}" in
     if [[ -z "${new_port}" ]]; then
       echo "Usage: bash scripts/ui_service.sh port <PORT>"
       exit 1
-    fi>
+    fi
     echo "${new_port}" > "${PORT_FILE}"
     port="${new_port}"
     write_unit
