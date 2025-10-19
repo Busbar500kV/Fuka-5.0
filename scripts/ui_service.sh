@@ -1,18 +1,7 @@
 #!/bin/bash
-# Fuka 5.0 — Streamlit UI as a user-level systemd service (no sudo, survives terminal close)
+# Fuka 5.0 — Streamlit UI as a user-level systemd service (survives terminal close)
 # Usage:
-#   bash scripts/ui_service.sh install   # write unit, daemon-reload, enable, start
-#   bash scripts/ui_service.sh start
-#   bash scripts/ui_service.sh stop
-#   bash scripts/ui_service.sh restart
-#   bash scripts/ui_service.sh status
-#   bash scripts/ui_service.sh logs      # follow logs
-#   bash scripts/ui_service.sh port 8503 # change port and restart
-#
-# Notes:
-# - Runs as a *user* service, not root. Survives terminal exit.
-# - Uses the same env as ui_local.sh (F5_*, PYTHONPATH).
-# - Defaults to port 8501; you can change with `port` command.
+#   bash scripts/ui_service.sh install|start|stop|restart|status|logs|port <PORT>
 
 set -euo pipefail
 
@@ -22,16 +11,14 @@ UNIT_NAME="fuka-ui.service"
 UNIT_PATH="${UNIT_DIR}/${UNIT_NAME}"
 VENV_PY="/opt/fuka-venv/bin/python"
 APP_PATH="${REPO_DIR}/app/streamlit_app.py"
-LOG_DIR="${REPO_DIR}/.logs"
 PORT_FILE="${REPO_DIR}/.ui_port"
 DEFAULT_PORT="8501"
 
-mkdir -p "${LOG_DIR}" "${UNIT_DIR}"
+mkdir -p "${UNIT_DIR}"
 
 port="$(cat "${PORT_FILE}" 2>/dev/null || echo "${DEFAULT_PORT}")"
 
 load_env() {
-  # Load local env for F5_* and ensure PYTHONPATH
   if [[ -f "${REPO_DIR}/scripts/env.local.sh" ]]; then
     # shellcheck disable=SC1091
     source "${REPO_DIR}/scripts/env.local.sh"
@@ -39,7 +26,7 @@ load_env() {
     export F5_STORAGE="local"
     export F5_LOCAL_RUNS_DIR="/home/busbar/fuka-runs"
     export F5_RUNS_PREFIX="runs"
-  fi
+  end
   export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 }
 
@@ -59,9 +46,9 @@ Environment=PYTHONPATH=${REPO_DIR}
 ExecStart=${VENV_PY} -m streamlit run ${APP_PATH} --server.port ${port} --server.address 0.0.0.0
 Restart=always
 RestartSec=2
-
-StandardOutput=append:${LOG_DIR}/ui_service.log
-StandardError=append:${LOG_DIR}/ui_service.err
+# Log to journal (view with: journalctl --user -u ${UNIT_NAME} -f)
+StandardOutput=journal
+StandardError=inherit
 
 [Install]
 WantedBy=default.target
@@ -102,7 +89,7 @@ case "${cmd}" in
     if [[ -z "${new_port}" ]]; then
       echo "Usage: bash scripts/ui_service.sh port <PORT>"
       exit 1
-    fi
+    fi>
     echo "${new_port}" > "${PORT_FILE}"
     port="${new_port}"
     write_unit
