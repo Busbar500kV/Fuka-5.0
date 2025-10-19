@@ -1,0 +1,18 @@
+# Local environment and build files
+.venv/
+__pycache__/
+*.log
+*.parquet
+*.npz
+/srv/fuka/
+
+# Local runtime artifacts
+*.log
+*.bak*
+*.tmp
+*.pyc
+__pycache__/
+app/streamlit_app.nodes_*.py
+scripts/add_*.py
+scripts/patch_*.py
+

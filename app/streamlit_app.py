@@ -1,236 +1,228 @@
-"""
-Streamlit UI for Fuka 5.0
--------------------------
-Browse GCS runs, pick an epoch, and visualize:
-  - 3D charge-density rho (isosurface) with outer/core masks
-  - Substrate edges overlayed (filters: band, gate mode, C/B percentiles)
-  - Metrics time series and histograms
-
-Assumptions:
-- GCS credentials via ADC on the VM (or locally).
-- Artifacts written by sim_cli.py under: gs://<bucket>/<runs_prefix>/<RUN_ID>/
-"""
-
 from __future__ import annotations
-import os
-import tempfile
-import json
-from typing import Dict, Any, List, Tuple
-
+import os, json
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-from fuka5.io.gcs import load_gcp_config, list_runs, list_blobs, download_blob_to_file, gcs_path
-from fuka5 import env_get
-
-# Components (shipped separately)
-try:
-    from app.components.plot3d import make_volume_fig, add_edges_to_fig
-    from app.components.panels import metrics_panel, filters_panel
-except Exception:
-    # Minimal fallbacks if components not yet shipped
-    def make_volume_fig(volumes: Dict[str, np.ndarray], iso_level: float = 0.4) -> go.Figure:
-        rho = volumes.get("rho")
-        if rho is None:
-            return go.Figure()
-        nx, ny, nz = rho.shape
-        fig = go.Figure(data=[
-            go.Volume(
-                value=rho.transpose(2,1,0),  # z,y,x for plotly
-                opacity=0.1,
-                surface_count=10,
-                showscale=True,
-            )
-        ])
-        fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0,r=0,t=0,b=0))
-        return fig
-
-    def add_edges_to_fig(fig: go.Figure, edges_df: pd.DataFrame, color_key: str = "C"):
-        if edges_df.empty:
-            return fig
-        for _, r in edges_df.iterrows():
-            fig.add_trace(go.Scatter3d(
-                x=[r["z_u"], r["z_v"]], y=[r["y_u"], r["y_v"]], z=[r["x_u"], r["x_v"]],
-                mode="lines", line=dict(width=2),
-                name="edge", hovertext=f'{r["edge_id"]} {color_key}={r.get(color_key,""):.3g}',
-                hoverinfo="text"
-            ))
-        return fig
-
-    def metrics_panel(metrics_df: pd.DataFrame):
-        st.subheader("Metrics (raw)")
-        st.dataframe(metrics_df)
-
-    def filters_panel():
-        return {
-            "band": st.selectbox("Band", ["low", "high"]),
-            "gate_mode": st.selectbox("Gate mode", ["mix", "1", "1p"]),
-            "min_C_pct": st.slider("Min C percentile", 0.0, 100.0, 20.0, 1.0),
-            "min_B_pct": st.slider("Min B percentile", 0.0, 100.0, 20.0, 1.0),
-            "color_key": st.selectbox("Edge color", ["C", "B", "A", "E"]),
-        }
-
-
-# ---------------------------
-# Caching helpers
-# ---------------------------
-
-@st.cache_data(show_spinner=False)
-def _load_gcp(gcp_path: str) -> Dict[str, Any]:
-    return load_gcp_config(gcp_path)
-
-@st.cache_data(show_spinner=True, ttl=60)
-def _list_runs_cached(gcp_cfg: Dict[str, Any]) -> List[str]:
-    return list_runs(gcp_cfg)
-
-@st.cache_data(show_spinner=False)
-def _list_run_blobs(gcp_cfg: Dict[str, Any], run_id: str) -> Dict[str, List[str]]:
-    base = gcs_path(gcp_cfg, run_id)
-    blobs = list_blobs(gcp_cfg, base)
-    vols = [b for b in blobs if b.startswith(f"{gcp_cfg['runs_prefix'].strip('/')}/{run_id}/volumes/")]
-    shards = [b for b in blobs if b.startswith(f"{gcp_cfg['runs_prefix'].strip('/')}/{run_id}/shards/")]
-    return {"volumes": vols, "shards": shards}
-
-def _download_to_tmp(gcp_cfg: Dict[str, Any], blob_gs_path: str) -> str:
-    tmpdir = tempfile.gettempdir()
-    fname = blob_gs_path.split("/")[-1]
-    local_path = os.path.join(tmpdir, "fuka5_cache", fname)
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    download_blob_to_file(gcp_cfg, blob_gs_path, local_path)
-    return local_path
-
-@st.cache_data(show_spinner=False)
-def _load_volume_npz(gcp_cfg: Dict[str, Any], gs_path: str) -> Dict[str, np.ndarray]:
-    local = _download_to_tmp(gcp_cfg, gs_path)
-    with np.load(local) as z:
-        return {k: z[k] for k in z.files}
-
-@st.cache_data(show_spinner=False)
-def _load_parquet(gcp_cfg: Dict[str, Any], gs_path: str) -> pd.DataFrame:
-    local = _download_to_tmp(gcp_cfg, gs_path)
-    return pd.read_parquet(local)
-
-# ---------------------------
-# UI
-# ---------------------------
+# -------------------
+# Hard-set local dirs
+# -------------------
+RUNS_BASE = Path("/home/busbar/fuka-runs/runs")
+assert RUNS_BASE.exists(), f"{RUNS_BASE} does not exist!"
 
 st.set_page_config(page_title="Fuka 5.0", layout="wide")
 
-st.title("Fuka 5.0 — Space–Time Capacitor Substrate")
+def list_runs():
+    return sorted([p.name for p in RUNS_BASE.iterdir() if p.is_dir()])
 
-# GCP config
-default_gcp_path = os.environ.get("F5_GCP_CONFIG", "configs/gcp.default.json")
-gcp_path = st.sidebar.text_input("GCP config path", value=default_gcp_path)
-gcp_cfg = _load_gcp(gcp_path)
+def list_epochs(run_id):
+    vdir = RUNS_BASE / run_id / "volumes"
+    eps = []
+    if vdir.is_dir():
+        for p in vdir.glob("epoch_*.npz"):
+            try: eps.append(int(p.stem.split("_")[1]))
+            except: pass
+    return sorted(eps), vdir
 
-st.sidebar.markdown(f"**Project:** `{gcp_cfg.get('project_id','')}`")
-st.sidebar.markdown(f"**Bucket:** `{gcp_cfg.get('bucket','')}`")
+def load_npz(run_id, epoch):
+    path = RUNS_BASE / run_id / "volumes" / f"epoch_{epoch:04d}.npz"
+    with np.load(path) as z:
+        return {k: z[k] for k in z.files}, path
 
-# Runs
-runs = _list_runs_cached(gcp_cfg)
+# ---- sidebar ----
+st.sidebar.header("Select run / epoch (local)")
+runs = list_runs()
 if not runs:
-    st.warning("No runs found in the bucket. Start a run with scripts/run_sim.sh")
+    st.sidebar.error(f"No runs found in {RUNS_BASE}.")
     st.stop()
 
-run_id = st.sidebar.selectbox("Run", runs, index=max(0, len(runs)-1))
-st.sidebar.write(f"Selected run: `{run_id}`")
+run_id = st.sidebar.selectbox("Run", runs, index=len(runs)-1)
+epochs, vdir = list_epochs(run_id)
+st.sidebar.code(str(vdir))
+st.sidebar.write(f"Epochs found: {epochs if epochs else '[]'}")
 
-# List blobs for run, extract epochs from volumes
-blobs = _list_run_blobs(gcp_cfg, run_id)
-vol_blobs = sorted(blobs["volumes"])
-if not vol_blobs:
-    st.warning("No volume snapshots found for this run yet.")
+if not epochs:
+    st.warning("No epoch_####.npz yet—let the sim write a few.")
     st.stop()
 
-def _epoch_from_volname(name: str) -> int:
-    # runs/<run>/volumes/epXXX.npz
-    base = os.path.basename(name)
-    try:
-        return int(base.split("ep")[1].split(".")[0])
-    except Exception:
-        return 0
+if "epoch_idx" not in st.session_state: st.session_state.epoch_idx = len(epochs)-1
+c1, c2 = st.sidebar.columns(2)
+with c1:
+    if st.button("⏪ Prev"):
+        st.session_state.epoch_idx = max(0, st.session_state.epoch_idx-1)
+        st.rerun()
+with c2:
+    if st.button("⏩ Next"):
+        st.session_state.epoch_idx = min(len(epochs)-1, st.session_state.epoch_idx+1)
+        st.rerun()
+epoch = st.sidebar.selectbox("Epoch", epochs, index=st.session_state.epoch_idx, key="epoch_select")
+try:
+    st.session_state.epoch_idx = epochs.index(epoch)  # keep index in sync with dropdown
+except Exception:
+    pass
+iso_pct = st.sidebar.slider("Isosurface percentile (rho)", 50, 99, 75)
+opacity = st.sidebar.slider("Isosurface opacity", 1, 100, 25) / 100.0
 
-epochs = sorted([_epoch_from_volname(b) for b in vol_blobs])
-epoch = st.sidebar.slider("Epoch", min_value=int(min(epochs)), max_value=int(max(epochs)), value=int(max(epochs)), step=1)
+# ---- main ----
+st.title("Fuka 5.0 — Space–Time Capacitor Substrate")
+data, path = load_npz(run_id, epoch)
+rho = np.array(data["rho"])
+st.success(f"Loaded {path}")
 
-# Find matching volume npz
-vol_gs = None
-for b in vol_blobs:
-    if f"ep{epoch:03d}.npz" in b:
-        vol_gs = f"gs://{gcp_cfg['bucket'][5:]}/{b}"
-        break
+# ---- 3D figure ----
+x, y, z = np.arange(rho.shape[0]), np.arange(rho.shape[1]), np.arange(rho.shape[2])
+iso = np.nanpercentile(rho, iso_pct)
+fig = go.Figure(go.Isosurface(
+    x=np.repeat(x, len(y)*len(z)),
+    y=np.tile(np.repeat(y, len(z)), len(x)),
+    z=np.tile(z, len(x)*len(y)),
+    value=rho.ravel(order="F"),
+    isomin=iso, isomax=rho.max(),
+    caps=dict(x_show=False, y_show=False, z_show=False),
+    opacity=opacity,
+    showscale=False,
+))
+fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=0, b=0), height=700)
 
-if vol_gs is None:
-    st.error("Selected epoch volume not found.")
-    st.stop()
 
-# Load volume & render
-volumes = _load_volume_npz(gcp_cfg, vol_gs)
 
-# Load shards (edges + metrics). We’ll load all and filter client-side (they’re small-ish).
-edge_shards = [b for b in blobs["shards"] if "edges_" in b]
-metric_shards = [b for b in blobs["shards"] if "metrics_" in b]
 
-edges_df = pd.DataFrame()
-for sh in sorted(edge_shards):
-    df = _load_parquet(gcp_cfg, f"gs://{gcp_cfg['bucket'][5:]}/{sh}")
-    edges_df = pd.concat([edges_df, df], ignore_index=True)
 
-metrics_df = pd.DataFrame()
-for sh in sorted(metric_shards):
-    dfm = _load_parquet(gcp_cfg, f"gs://{gcp_cfg['bucket'][5:]}/{sh}")
-    metrics_df = pd.concat([metrics_df, dfm], ignore_index=True)
 
-# Filter by epoch
-edges_ep = edges_df[edges_df["epoch"] == epoch].copy()
-if edges_ep.empty:
-    st.warning("No edge records for this epoch (yet). Try another epoch.")
-    st.stop()
 
-# Panels: metrics overview
-with st.container():
-    left, right = st.columns([2,1], gap="large")
-    with left:
-        st.subheader("3D World & Substrate")
-        fig = make_volume_fig(volumes, iso_level=0.4)
 
-        # Filters
-        with st.expander("Edge overlay filters", expanded=True):
-            filt = filters_panel()
-        band = filt["band"]; mode = filt["gate_mode"]; color_key = filt["color_key"]
 
-        # Thresholds
-        c_thr = np.percentile(edges_ep["C"], filt["min_C_pct"]) if len(edges_ep) else 0.0
-        b_thr = np.percentile(edges_ep["B"], filt["min_B_pct"]) if len(edges_ep) else 0.0
 
-        # Gate column name
-        gate_col = f"g_{band}_{'mix' if mode=='mix' else ('1' if mode=='1' else '1p')}"
 
-        # Select edges meeting thresholds and with gate emphasis
-        show = edges_ep[(edges_ep["C"] >= c_thr) & (edges_ep["B"] >= b_thr)]
-        # Sort by gate weight descending to show more relevant edges
-        if gate_col in show:
-            show = show.sort_values(gate_col, ascending=False).head(200)
 
-        fig = add_edges_to_fig(fig, show, color_key=color_key)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+# ====== Nodes overlay
+with st.sidebar.expander("Nodes overlay", expanded=False):
+    show_core   = st.checkbox("Show core nodes", value=True,  key="nodes_show_core")
+    show_outer  = st.checkbox("Show outer nodes", value=True, key="nodes_show_outer")
+    node_stride = st.slider("Node stride", 1, 12, 3, key="nodes_stride")
+    node_size   = st.slider("Marker size", 1, 10, 4, key="nodes_size")
+    fallback_rho_points = st.checkbox("Fallback: show rho points if masks missing",
+                                      value=True, key="nodes_fallback_rho")
+    rho_quantile = st.slider("rho threshold quantile", 0.90, 0.999, 0.97,
+                             key="nodes_rho_quantile")
 
-    with right:
-        st.subheader("Run & Epoch")
-        st.json({"run_id": run_id, "epoch": int(epoch)})
-        st.subheader("Quick metrics")
+# --- DEBUG: show the variables we rely on
+_dbg_run_id  = locals().get("run_id", None)
+_dbg_epoch   = locals().get("epoch", None)
+_dbg_gcp_cfg = locals().get("gcp_cfg", None)
+# st.caption(f"[DBG] run_id={_dbg_run_id} epoch={_dbg_epoch} gcp_cfg={_dbg_gcp_cfg is not None}")
+
+from pathlib import Path as _Path
+_runs_dir  = _Path((_dbg_gcp_cfg or {}).get("runs_dir", "/home/busbar/fuka-runs")).expanduser()
+_runs_pref = (_dbg_gcp_cfg or {}).get("runs_prefix", "runs").strip("/")
+
+_epoch_path = None
+if _dbg_run_id is not None and _dbg_epoch is not None:
+    _epoch_path = _runs_dir / f"{_runs_pref}/{_dbg_run_id}/volumes/epoch_{int(_dbg_epoch):04d}.npz"
+# st.caption(f"[DBG] epoch_path={_epoch_path} exists={( _epoch_path and _epoch_path.exists() )}")
+
+_core_ct = _outer_ct = _rho_ct = 0
+try:
+    import numpy as np
+    if _epoch_path and _epoch_path.exists():
+        npz = np.load(_epoch_path, allow_pickle=False)
+#         st.caption(f"[DBG] npz keys: {list(npz.keys())}")
+
+        core  = npz.get("core_mask")
+        outer = npz.get("outer_mask")
+
+        def _mask_points(mask, stride):
+            z, y, x = np.where(mask)
+            if z.size == 0: return np.array([]), np.array([]), np.array([])
+            sel = (np.arange(z.size) % max(1,int(stride))) == 0
+            return x[sel], y[sel], z[sel]
+
+        if show_core and core is not None:
+            _x,_y,_z = _mask_points(core, node_stride); _core_ct = _x.size
+            if _core_ct:
+                fig.add_trace(go.Scatter3d(
+                    x=_x, y=_y, z=_z, mode="markers", name="core",
+                    marker=dict(size=node_size, color="yellow"), opacity=1.0))
+
+        if show_outer and outer is not None:
+            _x,_y,_z = _mask_points(outer, node_stride); _outer_ct = _x.size
+            if _outer_ct:
+                fig.add_trace(go.Scatter3d(
+                    x=_x, y=_y, z=_z, mode="markers", name="outer",
+                    marker=dict(size=node_size, color="magenta"), opacity=0.9))
+
+        if fallback_rho_points and (_core_ct + _outer_ct == 0):
+            rho = npz.get("rho")
+            if rho is not None:
+                thr = float(np.quantile(rho[np.isfinite(rho)], float(rho_quantile)))
+                zz, yy, xx = np.where(rho >= thr)
+                if zz.size:
+                    sel = (np.arange(zz.size) % max(1,int(node_stride))) == 0
+                    xx, yy, zz = xx[sel], yy[sel], zz[sel]
+                    _rho_ct = int(xx.size)
+                    fig.add_trace(go.Scatter3d(
+                        x=xx, y=yy, z=zz, mode="markers", name=f"rho≥q{rho_quantile:.3f}",
+                        marker=dict(size=node_size, color="cyan"), opacity=0.9))
+except Exception as _e:
+    st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
+
+# st.caption(f"Nodes overlay: core={_core_ct} outer={_outer_ct} rhoPts={_rho_ct}")
+# ====== /Nodes overlay ======
+# ====== Edge overlay (auto-inserted) ======
+import pandas as pd, numpy as np
+from pathlib import Path
+from plotly import graph_objects as go
+
+_run_dir = Path('/home/busbar/fuka-runs/runs')/run_id
+_shards_dir = _run_dir/'shards'
+
+@st.cache_data(show_spinner=True, ttl=30)
+def _load_edges_epoch(ep, max_rows=8000):
+    import glob
+    import pyarrow.parquet as pq  # noqa: F401
+    dfs=[]
+    for f in glob.glob(str(_shards_dir/'edges_*.parquet')):
         try:
-            last_metrics = metrics_df[metrics_df["epoch"] <= epoch].tail(50)
+            df = pd.read_parquet(f, engine='pyarrow')
         except Exception:
-            last_metrics = metrics_df
-        metrics_panel(last_metrics)
+            continue
+        dfe = df[df['epoch'] == int(ep)]
+        if not dfe.empty:
+            dfs.append(dfe)
+    if not dfs:
+        return pd.DataFrame()
+    return pd.concat(dfs).head(max_rows)
 
-# Per-edge table (top-K)
-st.subheader("Top edges")
-top_key = st.selectbox("Sort by", ["B","C","A","E","P_low_s1","P_high_s1","P_low_s1p","P_high_s1p"], index=0)
-topk = edges_ep.sort_values(top_key, ascending=False).head(50)
-st.dataframe(topk, use_container_width=True)
+with st.sidebar.expander('Edges overlay', expanded=False):
+    show_edges   = st.checkbox('Show edges', value=True)
+    color_key    = st.selectbox('Color by', ['C','B','A','E'], index=0)
+    max_edges    = st.slider('Max edges', 1000, 20000, 5000, step=1000)
+    edge_opacity = st.slider('Edge opacity (%)', 10, 100, 50)/100
 
-st.caption("Tip: Adjust volume snapshot cadence and downsampling in training/world configs for smoother UI.")
+if show_edges:
+    edges = _load_edges_epoch(epoch, max_rows=max_edges)
+    if not edges.empty:
+        X = np.vstack([edges.x_u, edges.x_v, np.full_like(edges.x_u, np.nan)]).T.reshape(-1)
+        Y = np.vstack([edges.y_u, edges.y_v, np.full_like(edges.y_u, np.nan)]).T.reshape(-1)
+        Z = np.vstack([edges.z_u, edges.z_v, np.full_like(edges.z_u, np.nan)]).T.reshape(-1)
+        C = edges[color_key].to_numpy(dtype=float)
+        cmin, cmax = np.percentile(C,5), np.percentile(C,95)
+        if cmax <= cmin: cmax = cmin + 1e-9
+        Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
+        Cline = np.repeat(Cn, 3); Cline[2::3] = np.nan
+        fig.add_trace(go.Scatter3d(
+            x=X, y=Y, z=Z, mode='lines',
+            line=dict(width=2, color=Cline, colorscale='Viridis'),
+            opacity=edge_opacity, name=f'Edges ({len(edges)})'
+        ))
+        # (overlay suppressed)         st.plotly_chart(fig, use_container_width=True)
+# ====== End overlay ======
+st.plotly_chart(fig, use_container_width=True)
+
+
+st.subheader("NPZ contents")
+st.dataframe(pd.DataFrame(
+    [{"key": k, "shape": list(v.shape), "dtype": str(v.dtype)} for k, v in data.items()]
+))
