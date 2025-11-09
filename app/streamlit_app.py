@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os, json
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -14,6 +13,9 @@ assert RUNS_BASE.exists(), f"{RUNS_BASE} does not exist!"
 
 st.set_page_config(page_title="Fuka 5.0", layout="wide")
 
+# -------------------
+# Helpers
+# -------------------
 def list_runs():
     return sorted([p.name for p in RUNS_BASE.iterdir() if p.is_dir()])
 
@@ -32,6 +34,52 @@ def load_npz(run_id, epoch):
     path = RUNS_BASE / run_id / "volumes" / f"epoch_{epoch:04d}.npz"
     with np.load(path) as z:
         return {k: z[k] for k in z.files}, path
+
+def shards_dir(run_id: str) -> Path:
+    return RUNS_BASE / run_id / "shards"
+
+def edges_file_for_epoch(run_id: str, ep: int) -> Path | None:
+    sd = shards_dir(run_id)
+    if not sd.exists():
+        return None
+    p4 = sd / f"edges-{ep:04d}.parquet"
+    if p4.exists():
+        return p4
+    p3 = sd / f"edges-{ep:03d}.parquet"
+    if p3.exists():
+        return p3
+    return None
+
+@st.cache_data(show_spinner=True, ttl=30)
+def load_edges_epoch(run_id: str, ep: int, max_rows: int = 8000) -> pd.DataFrame:
+    """Load edges for the given epoch. Columns present: ['epoch','src','dst','dist','weight','energy','phase']"""
+    cand = edges_file_for_epoch(run_id, ep)
+    dfs: list[pd.DataFrame] = []
+    if cand is not None:
+        try:
+            df = pd.read_parquet(cand, engine="pyarrow")
+            if "epoch" in df.columns:
+                df = df[df["epoch"] == int(ep)]
+            if not df.empty:
+                dfs.append(df)
+        except Exception:
+            pass
+    if not dfs:
+        # fallback: scan & filter
+        sd = shards_dir(run_id)
+        if sd.exists():
+            for f in sorted(sd.glob("edges-*.parquet")):
+                try:
+                    dfx = pd.read_parquet(f, engine="pyarrow")
+                    if "epoch" in dfx.columns:
+                        dfx = dfx[dfx["epoch"] == int(ep)]
+                    if not dfx.empty:
+                        dfs.append(dfx)
+                except Exception:
+                    continue
+    if not dfs:
+        return pd.DataFrame(columns=["epoch","src","dst","dist","weight","energy","phase"])
+    return pd.concat(dfs, ignore_index=True).head(max_rows)
 
 # ---- sidebar ----
 st.sidebar.header("Select run / epoch (local)")
@@ -77,7 +125,7 @@ data, path = load_npz(run_id, epoch)
 rho = np.array(data["rho"])
 st.success(f"Loaded {path}")
 
-# ---- 3D figure ----
+# ---- 3D figure (isosurface) ----
 x, y, z = np.arange(rho.shape[0]), np.arange(rho.shape[1]), np.arange(rho.shape[2])
 iso = np.nanpercentile(rho, iso_pct)
 fig = go.Figure(
@@ -166,10 +214,10 @@ try:
                 )
 
         if fallback_rho_points and (_core_ct + _outer_ct == 0):
-            rho = npz.get("rho")
-            if rho is not None:
-                thr = float(np.quantile(rho[np.isfinite(rho)], float(rho_quantile)))
-                zz, yy, xx = np.where(rho >= thr)
+            rho2 = npz.get("rho")
+            if rho2 is not None:
+                thr = float(np.quantile(rho2[np.isfinite(rho2)], float(rho_quantile)))
+                zz, yy, xx = np.where(rho2 >= thr)
                 if zz.size:
                     sel = (np.arange(zz.size) % max(1, int(node_stride))) == 0
                     xx, yy, zz = xx[sel], yy[sel], zz[sel]
@@ -188,99 +236,53 @@ try:
 except Exception as _e:
     st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
 
-# ====== Edge overlay (fixed) ======
-import glob
-from pathlib import Path
-import pandas as pd
-import numpy as np
-from plotly import graph_objects as go
-
-_run_dir = Path("/home/busbar/fuka-runs/runs") / run_id
-_shards_dir = _run_dir / "shards"
-
-def _edges_file_for_epoch(ep: int) -> Path | None:
-    if not _shards_dir.exists():
-        return None
-    p4 = _shards_dir / f"edges-{ep:04d}.parquet"
-    if p4.exists():
-        return p4
-    p3 = _shards_dir / f"edges-{ep:03d}.parquet"
-    if p3.exists():
-        return p3
-    return None
-
-@st.cache_data(show_spinner=True, ttl=30)
-def _load_edges_epoch(ep: int, max_rows: int = 8000) -> pd.DataFrame:
-    try:
-        import pyarrow.parquet as pq
-    except Exception:
-        pass
-
-    cand = _edges_file_for_epoch(int(ep))
-    if cand and cand.exists():
-        try:
-            df = pd.read_parquet(cand, engine="pyarrow")
-            if "epoch" in df.columns:
-                df = df[df["epoch"] == int(ep)]
-            return df.head(max_rows)
-        except Exception:
-            pass
-
-    dfs = []
-    for f in sorted(_shards_dir.glob("edges-*.parquet")):
-        try:
-            dfx = pd.read_parquet(f, engine="pyarrow")
-            if "epoch" in dfx.columns:
-                dfx = dfx[dfx["epoch"] == int(ep)]
-            if not dfx.empty:
-                dfs.append(dfx)
-        except Exception:
-            continue
-    if not dfs:
-        return pd.DataFrame()
-    return pd.concat(dfs, ignore_index=True).head(max_rows)
+# ====== Edge overlay (indices → 3D coords) ======
+from pathlib import Path as _P
 
 with st.sidebar.expander("Edges overlay", expanded=False):
-    show_edges = st.checkbox("Show edges", value=True)
-    color_key = st.selectbox("Color by", ["C", "B", "A", "E"], index=0)
-    max_edges = st.slider("Max edges", 1000, 20000, 5000, step=1000)
+    show_edges   = st.checkbox("Show edges", value=True)
+    color_key    = st.selectbox("Color by", ["weight","energy","dist","phase"], index=0)
+    max_edges    = st.slider("Max edges", 1000, 20000, 5000, step=1000)
     edge_opacity = st.slider("Edge opacity (%)", 10, 100, 50) / 100
 
 if show_edges:
     try:
-        edges = _load_edges_epoch(int(epoch), max_rows=max_edges)
+        edges = load_edges_epoch(run_id, int(epoch), max_rows=max_edges)
         if not edges.empty:
-            needed = {"x_u", "y_u", "z_u", "x_v", "y_v", "z_v"}
-            if needed.issubset(set(edges.columns)):
-                X = np.vstack([edges.x_u, edges.x_v, np.full_like(edges.x_u, np.nan)]).T.reshape(-1)
-                Y = np.vstack([edges.y_u, edges.y_v, np.full_like(edges.y_u, np.nan)]).T.reshape(-1)
-                Z = np.vstack([edges.z_u, edges.z_v, np.full_like(edges.z_u, np.nan)]).T.reshape(-1)
+            # Map flat node indices to (z,y,x) using rho.shape
+            # Assumption: src/dst are C-order flattened indices.
+            ZYZ = rho.shape  # (X,Y,Z) in our earlier isosurface convention uses ravel(order="F") for values
+            # For coordinates, we'll use standard unravel_index (C-order). If orientation looks mirrored,
+            # we can swap axes later — the goal is to render edges correctly in 3D.
+            zi_u, yi_u, xi_u = np.unravel_index(edges["src"].to_numpy(dtype=np.int64), ZYZ, order="C")
+            zi_v, yi_v, xi_v = np.unravel_index(edges["dst"].to_numpy(dtype=np.int64), ZYZ, order="C")
 
-                if color_key in edges.columns:
-                    C = edges[color_key].to_numpy(dtype=float)
-                    cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
-                    if cmax <= cmin:
-                        cmax = cmin + 1e-9
-                    Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
-                    Cline = np.repeat(Cn, 3)
-                    Cline[2::3] = np.nan
-                    line_kwargs = dict(width=2, color=Cline, colorscale="Viridis")
-                else:
-                    line_kwargs = dict(width=2)
+            # Build polyline arrays with NaN separators
+            X = np.vstack([xi_u, xi_v, np.full_like(xi_u, np.nan)]).T.reshape(-1)
+            Y = np.vstack([yi_u, yi_v, np.full_like(yi_u, np.nan)]).T.reshape(-1)
+            Z = np.vstack([zi_u, zi_v, np.full_like(zi_u, np.nan)]).T.reshape(-1)
 
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=X,
-                        y=Y,
-                        z=Z,
-                        mode="lines",
-                        line=line_kwargs,
-                        opacity=edge_opacity,
-                        name=f"Edges ({len(edges):,})",
-                    )
-                )
+            # Color mapping
+            if color_key in edges.columns:
+                C = edges[color_key].to_numpy(dtype=float)
+                cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
+                if cmax <= cmin:
+                    cmax = cmin + 1e-9
+                Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
+                Cline = np.repeat(Cn, 3)
+                Cline[2::3] = np.nan
+                line_kwargs = dict(width=2, color=Cline, colorscale="Viridis")
             else:
-                st.info(f"Edges present for epoch {epoch}, but missing coordinate columns.")
+                line_kwargs = dict(width=2)
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=X, y=Y, z=Z, mode="lines",
+                    line=line_kwargs,
+                    opacity=edge_opacity,
+                    name=f"Edges ({len(edges):,})",
+                )
+            )
         else:
             st.info(f"No edges found for epoch {epoch}.")
     except Exception as e:
