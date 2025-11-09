@@ -65,7 +65,6 @@ def load_edges_epoch(run_id: str, ep: int, max_rows: int = 8000) -> pd.DataFrame
         except Exception:
             pass
     if not dfs:
-        # Fallback: scan all shards
         sd = shards_dir(run_id)
         if sd.exists():
             for f in sorted(sd.glob("edges-*.parquet")):
@@ -156,7 +155,6 @@ with st.sidebar.expander("Nodes overlay", expanded=False):
         "rho threshold quantile", 0.90, 0.999, 0.97, key="nodes_rho_quantile"
     )
 
-# Pull masks from the same NPZ we already loaded
 core = data.get("core_mask")
 outer = data.get("outer_mask")
 
@@ -207,7 +205,7 @@ try:
 except Exception as _e:
     st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
 
-# ====== Edge overlay: compact IDs → coordinates via mask order ======
+# ====== Edge overlay (compact IDs → coords via masks; FLOAT coords for NaN separators) ======
 with st.sidebar.expander("Edges overlay", expanded=False):
     show_edges   = st.checkbox("Show edges", value=True)
     color_key    = st.selectbox("Color by", ["weight","energy","dist","phase"], index=0)
@@ -215,15 +213,15 @@ with st.sidebar.expander("Edges overlay", expanded=False):
     edge_opacity = st.slider("Edge opacity (%)", 10, 100, 50) / 100
 
 def _build_compact_node_coords(core_mask, outer_mask):
-    """Build a deterministic list of node (z,y,x) from masks. Order: np.argwhere(core|outer) in C-order."""
     if core_mask is None and outer_mask is None:
         return None
-    if core_mask is None: m = outer_mask.astype(bool)
-    elif outer_mask is None: m = core_mask.astype(bool)
-    else: m = np.logical_or(core_mask, outer_mask)
-    # Argwhere returns (z,y,x) rows in C-order; we keep that as our canonical node list
-    coords = np.argwhere(m)  # shape (N, 3)
-    return coords  # each row: [z,y,x]
+    if core_mask is None:
+        m = outer_mask.astype(bool)
+    elif outer_mask is None:
+        m = core_mask.astype(bool)
+    else:
+        m = np.logical_or(core_mask, outer_mask)
+    return np.argwhere(m)  # rows [z,y,x]
 
 if show_edges:
     try:
@@ -231,21 +229,21 @@ if show_edges:
         if not edges.empty:
             node_coords = _build_compact_node_coords(core, outer)
             if node_coords is not None and not edges.empty:
-                max_id = int(edges[["src","dst"]].to_numpy().max())
+                max_id = int(edges[["src", "dst"]].to_numpy().max())
                 if max_id < len(node_coords):
-                    # Map compact IDs → coordinates from mask ordering
                     src = edges["src"].to_numpy(dtype=np.int64)
                     dst = edges["dst"].to_numpy(dtype=np.int64)
-                    # node_coords rows are [z,y,x]
                     Zu, Yu, Xu = node_coords[src].T
                     Zv, Yv, Xv = node_coords[dst].T
+                    # *** Cast to float so we can insert NaNs safely ***
+                    Xu = Xu.astype(float); Yu = Yu.astype(float); Zu = Zu.astype(float)
+                    Xv = Xv.astype(float); Yv = Yv.astype(float); Zv = Zv.astype(float)
+                    sep_u = np.full(Xu.shape, np.nan, dtype=float)
 
-                    # Build polyline arrays with NaN separators
-                    X = np.vstack([Xu, Xv, np.full_like(Xu, np.nan)]).T.reshape(-1)
-                    Y = np.vstack([Yu, Yv, np.full_like(Yu, np.nan)]).T.reshape(-1)
-                    Z = np.vstack([Zu, Zv, np.full_like(Zu, np.nan)]).T.reshape(-1)
+                    X = np.vstack([Xu, Xv, sep_u]).T.reshape(-1)
+                    Y = np.vstack([Yu, Yv, sep_u]).T.reshape(-1)
+                    Z = np.vstack([Zu, Zv, sep_u]).T.reshape(-1)
 
-                    # Color mapping
                     if color_key in edges.columns:
                         C = edges[color_key].to_numpy(dtype=float)
                         cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
@@ -266,16 +264,22 @@ if show_edges:
                         )
                     )
                 else:
-                    st.info("Edges present but node IDs exceed mask-derived node list. Falling back.")
-                    # Fallback: old unravel (voxel-flat interpretation)
-                    Nshape = rho.shape
-                    zi_u, yi_u, xi_u = np.unravel_index(edges["src"].to_numpy(np.int64), Nshape, order="C")
-                    zi_v, yi_v, xi_v = np.unravel_index(edges["dst"].to_numpy(np.int64), Nshape, order="C")
-                    X = np.vstack([xi_u, xi_v, np.full_like(xi_u, np.nan)]).T.reshape(-1)
-                    Y = np.vstack([yi_u, yi_v, np.full_like(yi_u, np.nan)]).T.reshape(-1)
-                    Z = np.vstack([zi_u, zi_v, np.full_like(zi_u, np.nan)]).T.reshape(-1)
-                    fig.add_trace(go.Scatter3d(x=X, y=Y, z=Z, mode="lines",
-                                               line=dict(width=2), opacity=edge_opacity, name="Edges (fallback)"))
+                    # Fallback: unravel assuming flattened voxel ids; ensure float before NaN inserts
+                    zi_u, yi_u, xi_u = np.unravel_index(edges["src"].to_numpy(np.int64), rho.shape, order="C")
+                    zi_v, yi_v, xi_v = np.unravel_index(edges["dst"].to_numpy(np.int64), rho.shape, order="C")
+                    xi_u = xi_u.astype(float); yi_u = yi_u.astype(float); zi_u = zi_u.astype(float)
+                    xi_v = xi_v.astype(float); yi_v = yi_v.astype(float); zi_v = zi_v.astype(float)
+                    sep = np.full(xi_u.shape, np.nan, dtype=float)
+                    X = np.vstack([xi_u, xi_v, sep]).T.reshape(-1)
+                    Y = np.vstack([yi_u, yi_v, sep]).T.reshape(-1)
+                    Z = np.vstack([zi_u, zi_v, sep]).T.reshape(-1)
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=X, y=Y, z=Z, mode="lines",
+                            line=dict(width=2), opacity=edge_opacity,
+                            name="Edges (fallback)"
+                        )
+                    )
             else:
                 st.info(f"No mask-derived nodes available for epoch {epoch}.")
         else:
