@@ -1,31 +1,33 @@
 from __future__ import annotations
+
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import pyarrow.parquet as pq  # for edge shards
 
-# -------------------
-# Local run directory
-# -------------------
+# ---------------------------------------------------------
+# Local runs root (your current layout)
+# ---------------------------------------------------------
 RUNS_BASE = Path("/home/busbar/fuka-runs/runs")
 assert RUNS_BASE.exists(), f"{RUNS_BASE} does not exist!"
 
 st.set_page_config(page_title="Fuka 5.0", layout="wide")
 
-# -------------------
-# Helpers
-# -------------------
-def _list_runs() -> list[str]:
+
+# ---------------------------------------------------------
+# Helpers: runs / epochs / NPZ
+# ---------------------------------------------------------
+def list_runs() -> List[str]:
     return sorted([p.name for p in RUNS_BASE.iterdir() if p.is_dir()])
 
-def _list_epochs(run_id: str) -> Tuple[list[int], Path]:
+
+def list_epochs(run_id: str) -> Tuple[List[int], Path]:
     vdir = RUNS_BASE / run_id / "volumes"
-    eps: list[int] = []
+    eps: List[int] = []
     if vdir.is_dir():
         for p in vdir.glob("epoch_*.npz"):
             try:
@@ -34,76 +36,25 @@ def _list_epochs(run_id: str) -> Tuple[list[int], Path]:
                 pass
     return sorted(eps), vdir
 
-@st.cache_data(show_spinner=False, ttl=5)
-def _load_npz(run_id: str, epoch: int) -> Tuple[Dict[str, np.ndarray], Path]:
+
+def load_npz(run_id: str, epoch: int):
     path = RUNS_BASE / run_id / "volumes" / f"epoch_{epoch:04d}.npz"
     with np.load(path) as z:
-        data = {k: z[k] for k in z.files}
-    return data, path
+        return {k: z[k] for k in z.files}, path
 
-@st.cache_data(show_spinner=True, ttl=30)
-def _load_edges_for_epoch(run_id: str, epoch: int, limit: int = 5000) -> pd.DataFrame:
-    shards_dir = RUNS_BASE / run_id / "shards"
-    if not shards_dir.exists():
-        return pd.DataFrame()
-    dfs = []
-    for f in sorted(shards_dir.glob("edges-*.parquet")):
-        try:
-            tbl = pq.read_table(f)
-            df = tbl.to_pandas()
-        except Exception:
-            continue
-        dfe = df[df["epoch"] == int(epoch)]
-        if not dfe.empty:
-            dfs.append(dfe)
-    if not dfs:
-        return pd.DataFrame()
-    df_all = pd.concat(dfs, ignore_index=True)
-    if len(df_all) > limit:
-        df_all = df_all.sample(limit, random_state=0).reset_index(drop=True)
-    return df_all
 
-def _isosurface_figure(rho: np.ndarray, iso_pct: int, opacity: float) -> go.Figure:
-    x = np.arange(rho.shape[0])
-    y = np.arange(rho.shape[1])
-    z = np.arange(rho.shape[2])
-    iso = np.nanpercentile(rho, iso_pct)
-
-    fig = go.Figure(go.Isosurface(
-        x=np.repeat(x, len(y) * len(z)),
-        y=np.tile(np.repeat(y, len(z)), len(x)),
-        z=np.tile(z, len(x) * len(y)),
-        value=rho.ravel(order="F"),
-        isomin=iso,
-        isomax=float(np.nanmax(rho)),
-        caps=dict(x_show=False, y_show=False, z_show=False),
-        opacity=opacity,
-        showscale=False,
-    ))
-    fig.update_layout(scene=dict(aspectmode="data"),
-                      margin=dict(l=0, r=0, t=0, b=0),
-                      height=700)
-    return fig
-
-def _mask_points(mask: np.ndarray, stride: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    zz, yy, xx = np.where(mask)
-    if zz.size == 0:
-        return np.array([]), np.array([]), np.array([])
-    sel = (np.arange(zz.size) % max(1, int(stride))) == 0
-    return xx[sel], yy[sel], zz[sel]
-
-# -------------------
-# Sidebar: selection
-# -------------------
+# ---------------------------------------------------------
+# Sidebar: selection + epoch nav
+# ---------------------------------------------------------
 st.sidebar.header("Select run / epoch (local)")
 
-runs = _list_runs()
+runs = list_runs()
 if not runs:
     st.sidebar.error(f"No runs found in {RUNS_BASE}.")
     st.stop()
 
 run_id = st.sidebar.selectbox("Run", runs, index=len(runs) - 1)
-epochs, vdir = _list_epochs(run_id)
+epochs, vdir = list_epochs(run_id)
 st.sidebar.code(str(vdir))
 st.sidebar.write(f"Epochs found: {epochs if epochs else '[]'}")
 
@@ -111,7 +62,6 @@ if not epochs:
     st.warning("No epoch_####.npz yet—let the sim write a few.")
     st.stop()
 
-# keep a stable index across reruns
 if "epoch_idx" not in st.session_state:
     st.session_state.epoch_idx = len(epochs) - 1
 
@@ -125,10 +75,10 @@ with c2:
         st.session_state.epoch_idx = min(len(epochs) - 1, st.session_state.epoch_idx + 1)
         st.rerun()
 
-epoch = st.sidebar.selectbox("Epoch", epochs,
-                             index=st.session_state.epoch_idx,
-                             key="epoch_select")
-# sync session index with dropdown choice
+epoch = st.sidebar.selectbox(
+    "Epoch", epochs, index=st.session_state.epoch_idx, key="epoch_select"
+)
+# keep idx in sync if user chooses via dropdown
 try:
     st.session_state.epoch_idx = epochs.index(epoch)
 except Exception:
@@ -137,115 +87,264 @@ except Exception:
 iso_pct = st.sidebar.slider("Isosurface percentile (rho)", 50, 99, 75)
 opacity = st.sidebar.slider("Isosurface opacity", 1, 100, 25) / 100.0
 
-# -------------------
-# Main content
-# -------------------
+# ---------------------------------------------------------
+# Main: load arrays
+# ---------------------------------------------------------
 st.title("Fuka 5.0 — Space–Time Capacitor Substrate")
-data, path = _load_npz(run_id, epoch)
-rho = np.array(data["rho"])
+
+data, path = load_npz(run_id, epoch)
+rho = np.array(data["rho"])  # (nx, ny, nz)
 st.success(f"Loaded {path}")
 
-fig = _isosurface_figure(rho, iso_pct=iso_pct, opacity=opacity)
+nx, ny, nz = rho.shape
 
-# ----- Nodes overlay -----
+# ---------------------------------------------------------
+# Isosurface figure (rho)
+# ---------------------------------------------------------
+x = np.arange(nx)
+y = np.arange(ny)
+z = np.arange(nz)
+
+iso = np.nanpercentile(rho, iso_pct)
+fig = go.Figure(
+    go.Isosurface(
+        x=np.repeat(x, ny * nz),
+        y=np.tile(np.repeat(y, nz), nx),
+        z=np.tile(z, nx * ny),
+        value=rho.ravel(order="F"),
+        isomin=iso,
+        isomax=rho.max(),
+        caps=dict(x_show=False, y_show=False, z_show=False),
+        opacity=opacity,
+        showscale=False,
+    )
+)
+fig.update_layout(
+    scene=dict(aspectmode="data"),
+    margin=dict(l=0, r=0, t=0, b=0),
+    height=760,
+)
+
+# ---------------------------------------------------------
+# Nodes overlay (core / outer masks, or rho fallback)
+# ---------------------------------------------------------
 with st.sidebar.expander("Nodes overlay", expanded=False):
-    show_core   = st.checkbox("Show core nodes", value=True,  key="nodes_show_core")
-    show_outer  = st.checkbox("Show outer nodes", value=True, key="nodes_show_outer")
+    show_core = st.checkbox("Show core nodes", value=True, key="nodes_show_core")
+    show_outer = st.checkbox("Show outer nodes", value=True, key="nodes_show_outer")
     node_stride = st.slider("Node stride (display sampling)", 1, 12, 3, key="nodes_stride")
-    node_size   = st.slider("Marker size", 1, 10, 3, key="nodes_size")
-    fallback_rho_points = st.checkbox("Fallback: show rho points if masks missing",
-                                      value=True, key="nodes_fallback_rho")
-    rho_quantile = st.slider("rho threshold quantile", 0.90, 0.999, 0.97,
-                             key="nodes_rho_quantile")
+    node_size = st.slider("Marker size", 1, 10, 4, key="nodes_size")
+    fallback_rho_points = st.checkbox(
+        "Fallback: show rho points if masks missing", value=True, key="nodes_fallback_rho"
+    )
+    rho_quantile = st.slider("rho threshold quantile", 0.90, 0.999, 0.97, key="nodes_rho_quantile")
 
-core  = data.get("core_mask")
-outer = data.get("outer_mask")
+core = data.get("core_mask", None)
+outer = data.get("outer_mask", None)
 
-if show_core and core is not None:
-    xx, yy, zz = _mask_points(core, node_stride)
-    if xx.size:
-        fig.add_trace(go.Scatter3d(
-            x=xx, y=yy, z=zz, mode="markers", name="core",
-            marker=dict(size=node_size, color="yellow"), opacity=1.0))
 
-if show_outer and outer is not None:
-    xx, yy, zz = _mask_points(outer, node_stride)
-    if xx.size:
-        fig.add_trace(go.Scatter3d(
-            x=xx, y=yy, z=zz, mode="markers", name="outer",
-            marker=dict(size=node_size, color="magenta"), opacity=0.9))
+def _mask_points(mask: np.ndarray, stride: int):
+    zz, yy, xx = np.where(mask)
+    if zz.size == 0:
+        return np.array([]), np.array([]), np.array([])
+    sel = (np.arange(zz.size) % max(1, int(stride))) == 0
+    return xx[sel], yy[sel], zz[sel]
 
-if (core is None and outer is None) and fallback_rho_points:
-    thr = float(np.quantile(rho[np.isfinite(rho)], float(rho_quantile)))
-    zz, yy, xx = np.where(rho >= thr)
-    if zz.size:
-        sel = (np.arange(zz.size) % max(1, int(node_stride))) == 0
-        xx, yy, zz = xx[sel], yy[sel], zz[sel]
-        fig.add_trace(go.Scatter3d(
-            x=xx, y=yy, z=zz, mode="markers",
-            name=f"rho≥q{rho_quantile:.3f}",
-            marker=dict(size=node_size, color="cyan"), opacity=0.9))
 
-# ----- Edges overlay -----
+try:
+    if show_core and core is not None:
+        _x, _y, _z = _mask_points(core, node_stride)
+        if _x.size:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=_x,
+                    y=_y,
+                    z=_z,
+                    mode="markers",
+                    name="core",
+                    marker=dict(size=node_size, color="yellow"),
+                    opacity=1.0,
+                )
+            )
+    if show_outer and outer is not None:
+        _x, _y, _z = _mask_points(outer, node_stride)
+        if _x.size:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=_x,
+                    y=_y,
+                    z=_z,
+                    mode="markers",
+                    name="outer",
+                    marker=dict(size=node_size, color="magenta"),
+                    opacity=0.9,
+                )
+            )
+    if fallback_rho_points and (core is None and outer is None):
+        thr = float(np.quantile(rho[np.isfinite(rho)], float(rho_quantile)))
+        zz, yy, xx = np.where(rho >= thr)
+        if zz.size:
+            sel = (np.arange(zz.size) % max(1, int(node_stride))) == 0
+            xx, yy, zz = xx[sel], yy[sel], zz[sel]
+            fig.add_trace(
+                go.Scatter3d(
+                    x=xx,
+                    y=yy,
+                    z=zz,
+                    mode="markers",
+                    name=f"rho≥q{rho_quantile:.3f}",
+                    marker=dict(size=node_size, color="cyan"),
+                    opacity=0.9,
+                )
+            )
+except Exception as _e:
+    st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
+
+# ---------------------------------------------------------
+# Edges overlay (from shards/*.parquet)
+# ---------------------------------------------------------
 with st.sidebar.expander("Edges overlay", expanded=False):
-    show_edges   = st.checkbox("Show edges", value=True)
-    color_key    = st.selectbox("Color by", ["weight", "energy", "dist", "phase"], index=0)
-    max_edges    = st.slider("Max edges", 1000, 20000, 5000, step=1000)
+    show_edges = st.checkbox("Show edges", value=True)
+    color_key = st.selectbox("Color by", ["dist", "weight", "energy", "phase"], index=0)
+    max_edges = st.slider("Max edges", 1000, 20000, 5000, step=1000)
     edge_opacity = st.slider("Edge opacity (%)", 10, 100, 95) / 100
 
-edges = pd.DataFrame()
-if show_edges:
-    edges = _load_edges_for_epoch(run_id, epoch, limit=max_edges)
 
-    # stats panel
-    with st.expander("Edge stats", expanded=False):
-        if edges.empty:
-            st.info("No edges for this epoch.")
+@st.cache_data(show_spinner=True, ttl=30)
+def _load_edges_epoch(run: str, ep: int, limit: int) -> pd.DataFrame:
+    import glob
+
+    shards_dir = RUNS_BASE / run / "shards"
+    if not shards_dir.exists():
+        return pd.DataFrame()
+
+    dfs: List[pd.DataFrame] = []
+    for f in glob.glob(str(shards_dir / "edges-*.parquet")):
+        try:
+            df = pd.read_parquet(f, engine="pyarrow")
+        except Exception:
+            continue
+        dfe = df[df["epoch"] == int(ep)]
+        if not dfe.empty:
+            dfs.append(dfe)
+
+    if not dfs:
+        return pd.DataFrame()
+    out = pd.concat(dfs, ignore_index=True)
+    if limit is not None:
+        out = out.head(int(limit))
+    return out
+
+
+def _unravel_adaptive(idx: np.ndarray, shape: Tuple[int, int, int]) -> Tuple[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Try several plausible index→(x,y,z) mappings and pick the one
+    that yields the widest spatial spread (variance-based score).
+    """
+    nx, ny, nz = shape
+
+    def unravel_c(i):
+        x = i % nx
+        y = (i // nx) % ny
+        z = i // (nx * ny)
+        return x.astype(float), y.astype(float), z.astype(float)
+
+    def unravel_f(i):
+        z = i % nz
+        y = (i // nz) % ny
+        x = i // (nz * ny)
+        return x.astype(float), y.astype(float), z.astype(float)
+
+    def score(x, y, z):
+        vx = max(np.var(x), 1e-9)
+        vy = max(np.var(y), 1e-9)
+        vz = max(np.var(z), 1e-9)
+
+        def stuck_ratio(a, hi):
+            return (np.mean(a == 0) + np.mean(a == hi)) / 2.0
+
+        pen = 1.0 - 0.5 * (
+            stuck_ratio(x, nx - 1) + stuck_ratio(y, ny - 1) + stuck_ratio(z, nz - 1)
+        )
+        return (vx * vy * vz) * max(pen, 1e-6)
+
+    c_xyz = unravel_c(idx)
+    f_xyz = unravel_f(idx)
+
+    candidates = [
+        ("C(x,y,z)", c_xyz),
+        ("C(y,x,z)", (c_xyz[1], c_xyz[0], c_xyz[2])),
+        ("C(x,z,y)", (c_xyz[0], c_xyz[2], c_xyz[1])),
+        ("C(z,y,x)", (c_xyz[2], c_xyz[1], c_xyz[0])),
+        ("F(x,y,z)", f_xyz),
+        ("F(y,x,z)", (f_xyz[1], f_xyz[0], f_xyz[2])),
+        ("F(x,z,y)", (f_xyz[0], f_xyz[2], f_xyz[1])),
+        ("F(z,y,x)", (f_xyz[2], f_xyz[1], f_xyz[0])),
+    ]
+
+    best_name, best_xyz, best_score = None, None, -1.0
+    for name, (x, y, z) in candidates:
+        s = score(x, y, z)
+        if s > best_score:
+            best_name, best_xyz, best_score = name, (x, y, z), s
+    return best_name, best_xyz
+
+
+if show_edges:
+    edges = _load_edges_epoch(run_id, epoch, max_edges)
+    if edges.empty:
+        st.info("No edges for this epoch.")
+    else:
+        missing = [c for c in ["src", "dst"] if c not in edges.columns]
+        if missing:
+            st.warning(f"Edges present for epoch {epoch}, but missing columns: {missing}")
         else:
-            st.write(f"Rows: **{len(edges):,}**")
-            st.dataframe(
-                edges[["epoch", "src", "dst", "dist", "weight", "energy", "phase"]]
-                .describe(percentiles=[0.05, 0.25, 0.5, 0.75, 0.95])
+            # Map src/dst → (x,y,z) adaptively
+            src = edges["src"].to_numpy(np.int64)
+            dst = edges["dst"].to_numpy(np.int64)
+
+            name_u, (xu, yu, zu) = _unravel_adaptive(src, rho.shape)
+            name_v, (xv, yv, zv) = _unravel_adaptive(dst, rho.shape)
+
+            # Build line segments with NaN separators
+            X = np.vstack([xu, xv, np.full_like(xu, np.nan)]).T.reshape(-1)
+            Y = np.vstack([yu, yv, np.full_like(yu, np.nan)]).T.reshape(-1)
+            Z = np.vstack([zu, zv, np.full_like(zu, np.nan)]).T.reshape(-1)
+
+            # Color selection and normalization
+            if color_key not in edges.columns:
+                edges[color_key] = 0.0
+            C = edges[color_key].to_numpy(dtype=float)
+            cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
+            if cmax <= cmin:
+                cmax = cmin + 1e-9
+            Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmax + 1e-12 if cmax == cmin else (cmax - cmin))
+            Cline = np.repeat(Cn, 3)
+            Cline[2::3] = np.nan  # keep gaps color-agnostic
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=X,
+                    y=Y,
+                    z=Z,
+                    mode="lines",
+                    line=dict(width=2, color=Cline, colorscale="Viridis"),
+                    opacity=edge_opacity,
+                    name=f"Edges ({len(edges)})",
+                )
             )
 
-    if not edges.empty:
-        # build 3D polyline batch (x,y,z with NaN separators)
-        # coordinates are derived from flat indices using Fortran order (z,y,x)
-        sh = rho.shape
-        def unravel_fortran(idx: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-            z = idx % sh[0]
-            y = (idx // sh[0]) % sh[1]
-            x = idx // (sh[0] * sh[1])
-            return x.astype(float), y.astype(float), z.astype(float)
+            with st.expander("Edge index decode (debug)", expanded=False):
+                st.write(f"src mapping: **{name_u}**, dst mapping: **{name_v}**")
 
-        xu, yu, zu = unravel_fortran(edges["src"].to_numpy(np.int64))
-        xv, yv, zv = unravel_fortran(edges["dst"].to_numpy(np.int64))
-
-        X = np.vstack([xu, xv, np.full_like(xu, np.nan)]).T.reshape(-1)
-        Y = np.vstack([yu, yv, np.full_like(yu, np.nan)]).T.reshape(-1)
-        Z = np.vstack([zu, zv, np.full_like(zu, np.nan)]).T.reshape(-1)
-
-        # color by selected metric with robust 5–95% clamp
-        C = edges[color_key].to_numpy(dtype=float)
-        cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
-        if cmax <= cmin:
-            cmax = cmin + 1e-9
-        Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
-        Cline = np.repeat(Cn, 3)
-        Cline[2::3] = np.nan
-
-        fig.add_trace(go.Scatter3d(
-            x=X, y=Y, z=Z, mode="lines",
-            line=dict(width=2, color=Cline, colorscale="Viridis"),
-            opacity=edge_opacity, name=f"Edges ({len(edges)})",
-            hoverinfo="skip"
-        ))
-
-# ----- Render -----
+# ---------------------------------------------------------
+# Final render
+# ---------------------------------------------------------
 st.plotly_chart(fig, use_container_width=True)
 
-# ----- NPZ contents quick table -----
+# Small table of arrays in NPZ
 st.subheader("NPZ contents")
-st.dataframe(pd.DataFrame(
-    [{"key": k, "shape": list(v.shape), "dtype": str(v.dtype)} for k, v in data.items()]
-))
+st.dataframe(
+    pd.DataFrame(
+        [{"key": k, "shape": list(v.shape), "dtype": str(v.dtype)} for k, v in data.items()]
+    )
+)
