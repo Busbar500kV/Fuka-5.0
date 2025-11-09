@@ -1,18 +1,23 @@
-# Local environment and build files
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local logs & artifacts
+.logs/
+*.log
+
+# Virtual envs
 .venv/
-__pycache__/
-*.log
-*.parquet
-*.npz
-/srv/fuka/
+venv/
+env/
 
-# Local runtime artifacts
-*.log
-*.bak*
-*.tmp
-*.pyc
-__pycache__/
-app/streamlit_app.nodes_*.py
-scripts/add_*.py
-scripts/patch_*.py
+# Jupyter / pytest / mypy caches
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
 
+# OS junk
+.DS_Store
+Thumbs.db
