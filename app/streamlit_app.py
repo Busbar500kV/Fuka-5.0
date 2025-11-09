@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.graph_objects as go
 
 # -------------------
-# Hard-set local dirs
+# Local runs root
 # -------------------
 RUNS_BASE = Path("/home/busbar/fuka-runs/runs")
 assert RUNS_BASE.exists(), f"{RUNS_BASE} does not exist!"
@@ -52,7 +52,7 @@ def edges_file_for_epoch(run_id: str, ep: int) -> Path | None:
 
 @st.cache_data(show_spinner=True, ttl=30)
 def load_edges_epoch(run_id: str, ep: int, max_rows: int = 8000) -> pd.DataFrame:
-    """Load edges for the given epoch. Columns present: ['epoch','src','dst','dist','weight','energy','phase']"""
+    """Load edges for the given epoch. Columns: ['epoch','src','dst','dist','weight','energy','phase']"""
     cand = edges_file_for_epoch(run_id, ep)
     dfs: list[pd.DataFrame] = []
     if cand is not None:
@@ -65,7 +65,7 @@ def load_edges_epoch(run_id: str, ep: int, max_rows: int = 8000) -> pd.DataFrame
         except Exception:
             pass
     if not dfs:
-        # fallback: scan & filter
+        # Fallback: scan all shards
         sd = shards_dir(run_id)
         if sd.exists():
             for f in sorted(sd.glob("edges-*.parquet")):
@@ -156,133 +156,128 @@ with st.sidebar.expander("Nodes overlay", expanded=False):
         "rho threshold quantile", 0.90, 0.999, 0.97, key="nodes_rho_quantile"
     )
 
-_dbg_run_id = locals().get("run_id", None)
-_dbg_epoch = locals().get("epoch", None)
+# Pull masks from the same NPZ we already loaded
+core = data.get("core_mask")
+outer = data.get("outer_mask")
 
-_runs_dir = Path("/home/busbar/fuka-runs").expanduser()
-_runs_pref = "runs"
-
-_epoch_path = None
-if _dbg_run_id is not None and _dbg_epoch is not None:
-    _epoch_path = _runs_dir / f"{_runs_pref}/{_dbg_run_id}/volumes/epoch_{int(_dbg_epoch):04d}.npz"
+def _mask_points(mask, stride):
+    z, y, x = np.where(mask)
+    if z.size == 0:
+        return np.array([]), np.array([]), np.array([])
+    sel = (np.arange(z.size) % max(1, int(stride))) == 0
+    return x[sel], y[sel], z[sel]
 
 _core_ct = _outer_ct = _rho_ct = 0
 try:
-    if _epoch_path and _epoch_path.exists():
-        npz = np.load(_epoch_path, allow_pickle=False)
-
-        core = npz.get("core_mask")
-        outer = npz.get("outer_mask")
-
-        def _mask_points(mask, stride):
-            z, y, x = np.where(mask)
-            if z.size == 0:
-                return np.array([]), np.array([]), np.array([])
-            sel = (np.arange(z.size) % max(1, int(stride))) == 0
-            return x[sel], y[sel], z[sel]
-
-        if show_core and core is not None:
-            _x, _y, _z = _mask_points(core, node_stride)
-            _core_ct = _x.size
-            if _core_ct:
+    if show_core and core is not None:
+        _x, _y, _z = _mask_points(core, node_stride)
+        _core_ct = _x.size
+        if _core_ct:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=_x, y=_y, z=_z, mode="markers", name="core",
+                    marker=dict(size=node_size, color="yellow"), opacity=1.0
+                )
+            )
+    if show_outer and outer is not None:
+        _x, _y, _z = _mask_points(outer, node_stride)
+        _outer_ct = _x.size
+        if _outer_ct:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=_x, y=_y, z=_z, mode="markers", name="outer",
+                    marker=dict(size=node_size, color="magenta"), opacity=0.9
+                )
+            )
+    if fallback_rho_points and (_core_ct + _outer_ct == 0):
+        rho2 = data.get("rho")
+        if rho2 is not None:
+            thr = float(np.quantile(rho2[np.isfinite(rho2)], float(rho_quantile)))
+            zz, yy, xx = np.where(rho2 >= thr)
+            if zz.size:
+                sel = (np.arange(zz.size) % max(1, int(node_stride))) == 0
+                xx, yy, zz = xx[sel], yy[sel], zz[sel]
+                _rho_ct = int(xx.size)
                 fig.add_trace(
                     go.Scatter3d(
-                        x=_x,
-                        y=_y,
-                        z=_z,
-                        mode="markers",
-                        name="core",
-                        marker=dict(size=node_size, color="yellow"),
-                        opacity=1.0,
+                        x=xx, y=yy, z=zz, mode="markers", name=f"rho≥q{rho_quantile:.3f}",
+                        marker=dict(size=node_size, color="cyan"), opacity=0.9
                     )
                 )
-
-        if show_outer and outer is not None:
-            _x, _y, _z = _mask_points(outer, node_stride)
-            _outer_ct = _x.size
-            if _outer_ct:
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=_x,
-                        y=_y,
-                        z=_z,
-                        mode="markers",
-                        name="outer",
-                        marker=dict(size=node_size, color="magenta"),
-                        opacity=0.9,
-                    )
-                )
-
-        if fallback_rho_points and (_core_ct + _outer_ct == 0):
-            rho2 = npz.get("rho")
-            if rho2 is not None:
-                thr = float(np.quantile(rho2[np.isfinite(rho2)], float(rho_quantile)))
-                zz, yy, xx = np.where(rho2 >= thr)
-                if zz.size:
-                    sel = (np.arange(zz.size) % max(1, int(node_stride))) == 0
-                    xx, yy, zz = xx[sel], yy[sel], zz[sel]
-                    _rho_ct = int(xx.size)
-                    fig.add_trace(
-                        go.Scatter3d(
-                            x=xx,
-                            y=yy,
-                            z=zz,
-                            mode="markers",
-                            name=f"rho≥q{rho_quantile:.3f}",
-                            marker=dict(size=node_size, color="cyan"),
-                            opacity=0.9,
-                        )
-                    )
 except Exception as _e:
     st.caption(f"[nodes overlay] {type(_e).__name__}: {_e}")
 
-# ====== Edge overlay (indices → 3D coords) ======
-from pathlib import Path as _P
-
+# ====== Edge overlay: compact IDs → coordinates via mask order ======
 with st.sidebar.expander("Edges overlay", expanded=False):
     show_edges   = st.checkbox("Show edges", value=True)
     color_key    = st.selectbox("Color by", ["weight","energy","dist","phase"], index=0)
     max_edges    = st.slider("Max edges", 1000, 20000, 5000, step=1000)
     edge_opacity = st.slider("Edge opacity (%)", 10, 100, 50) / 100
 
+def _build_compact_node_coords(core_mask, outer_mask):
+    """Build a deterministic list of node (z,y,x) from masks. Order: np.argwhere(core|outer) in C-order."""
+    if core_mask is None and outer_mask is None:
+        return None
+    if core_mask is None: m = outer_mask.astype(bool)
+    elif outer_mask is None: m = core_mask.astype(bool)
+    else: m = np.logical_or(core_mask, outer_mask)
+    # Argwhere returns (z,y,x) rows in C-order; we keep that as our canonical node list
+    coords = np.argwhere(m)  # shape (N, 3)
+    return coords  # each row: [z,y,x]
+
 if show_edges:
     try:
         edges = load_edges_epoch(run_id, int(epoch), max_rows=max_edges)
         if not edges.empty:
-            # Map flat node indices to (z,y,x) using rho.shape
-            # Assumption: src/dst are C-order flattened indices.
-            ZYZ = rho.shape  # (X,Y,Z) in our earlier isosurface convention uses ravel(order="F") for values
-            # For coordinates, we'll use standard unravel_index (C-order). If orientation looks mirrored,
-            # we can swap axes later — the goal is to render edges correctly in 3D.
-            zi_u, yi_u, xi_u = np.unravel_index(edges["src"].to_numpy(dtype=np.int64), ZYZ, order="C")
-            zi_v, yi_v, xi_v = np.unravel_index(edges["dst"].to_numpy(dtype=np.int64), ZYZ, order="C")
+            node_coords = _build_compact_node_coords(core, outer)
+            if node_coords is not None and not edges.empty:
+                max_id = int(edges[["src","dst"]].to_numpy().max())
+                if max_id < len(node_coords):
+                    # Map compact IDs → coordinates from mask ordering
+                    src = edges["src"].to_numpy(dtype=np.int64)
+                    dst = edges["dst"].to_numpy(dtype=np.int64)
+                    # node_coords rows are [z,y,x]
+                    Zu, Yu, Xu = node_coords[src].T
+                    Zv, Yv, Xv = node_coords[dst].T
 
-            # Build polyline arrays with NaN separators
-            X = np.vstack([xi_u, xi_v, np.full_like(xi_u, np.nan)]).T.reshape(-1)
-            Y = np.vstack([yi_u, yi_v, np.full_like(yi_u, np.nan)]).T.reshape(-1)
-            Z = np.vstack([zi_u, zi_v, np.full_like(zi_u, np.nan)]).T.reshape(-1)
+                    # Build polyline arrays with NaN separators
+                    X = np.vstack([Xu, Xv, np.full_like(Xu, np.nan)]).T.reshape(-1)
+                    Y = np.vstack([Yu, Yv, np.full_like(Yu, np.nan)]).T.reshape(-1)
+                    Z = np.vstack([Zu, Zv, np.full_like(Zu, np.nan)]).T.reshape(-1)
 
-            # Color mapping
-            if color_key in edges.columns:
-                C = edges[color_key].to_numpy(dtype=float)
-                cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
-                if cmax <= cmin:
-                    cmax = cmin + 1e-9
-                Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
-                Cline = np.repeat(Cn, 3)
-                Cline[2::3] = np.nan
-                line_kwargs = dict(width=2, color=Cline, colorscale="Viridis")
+                    # Color mapping
+                    if color_key in edges.columns:
+                        C = edges[color_key].to_numpy(dtype=float)
+                        cmin, cmax = np.percentile(C, 5), np.percentile(C, 95)
+                        if cmax <= cmin:
+                            cmax = cmin + 1e-9
+                        Cn = (np.clip(C, cmin, cmax) - cmin) / (cmax - cmin)
+                        Cline = np.repeat(Cn, 3)
+                        Cline[2::3] = np.nan
+                        line_kwargs = dict(width=2, color=Cline, colorscale="Viridis")
+                    else:
+                        line_kwargs = dict(width=2)
+
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=X, y=Y, z=Z, mode="lines",
+                            line=line_kwargs, opacity=edge_opacity,
+                            name=f"Edges ({len(edges):,})"
+                        )
+                    )
+                else:
+                    st.info("Edges present but node IDs exceed mask-derived node list. Falling back.")
+                    # Fallback: old unravel (voxel-flat interpretation)
+                    Nshape = rho.shape
+                    zi_u, yi_u, xi_u = np.unravel_index(edges["src"].to_numpy(np.int64), Nshape, order="C")
+                    zi_v, yi_v, xi_v = np.unravel_index(edges["dst"].to_numpy(np.int64), Nshape, order="C")
+                    X = np.vstack([xi_u, xi_v, np.full_like(xi_u, np.nan)]).T.reshape(-1)
+                    Y = np.vstack([yi_u, yi_v, np.full_like(yi_u, np.nan)]).T.reshape(-1)
+                    Z = np.vstack([zi_u, zi_v, np.full_like(zi_u, np.nan)]).T.reshape(-1)
+                    fig.add_trace(go.Scatter3d(x=X, y=Y, z=Z, mode="lines",
+                                               line=dict(width=2), opacity=edge_opacity, name="Edges (fallback)"))
             else:
-                line_kwargs = dict(width=2)
-
-            fig.add_trace(
-                go.Scatter3d(
-                    x=X, y=Y, z=Z, mode="lines",
-                    line=line_kwargs,
-                    opacity=edge_opacity,
-                    name=f"Edges ({len(edges):,})",
-                )
-            )
+                st.info(f"No mask-derived nodes available for epoch {epoch}.")
         else:
             st.info(f"No edges found for epoch {epoch}.")
     except Exception as e:
